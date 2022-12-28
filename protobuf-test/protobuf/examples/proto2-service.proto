@@ -1,0 +1,5 @@
+syntax = "proto2";
+import "search.proto";
+service SearchService {
+  rpc Search (SearchRequest) returns (SearchResponse);
+}
