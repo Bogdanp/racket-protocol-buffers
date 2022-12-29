@@ -118,8 +118,8 @@
      (case v
        [(true false)
         (make-token 'boolean s (eq? v 'true))]
-       [(syntax import weak public package option message enum required optional repeated
-                group oneof map extensions to max reserved service rpc returns)
+       [(syntax import weak public package option message enum extend required optional
+                repeated group oneof map extensions to max reserved service rpc returns)
         (make-token 'keyword s v)]
        [else
         (if (string-contains? s ".")
