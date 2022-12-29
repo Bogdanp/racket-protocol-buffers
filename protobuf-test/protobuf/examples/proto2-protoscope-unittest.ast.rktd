@@ -93,7 +93,9 @@
   TestDeprecatedFields
   ()
   ((MessageField optional int32 deprecated_int32 1 ((Option (deprecated) #t)))
-   (MessageOneOfField oneof_fields ((MessageField optional int32 deprecated_int32_in_oneof 2 ((Option (deprecated) #t))))))
+   (MessageOneOfField
+    oneof_fields
+    ((MessageField optional int32 deprecated_int32_in_oneof 2 ((Option (deprecated) #t))))))
   ()
   ()
   ())
@@ -488,7 +490,7 @@
  (Message
   TestExtremeDefaultValues
   ()
-  ((MessageField optional bytes escaped_bytes 1 ((Option (default) "\u000001\a\b\f\n\r\t\v\\'\"þ")))
+  ((MessageField optional bytes escaped_bytes 1 ((Option (default) "\u0000\u0001\a\b\f\n\r\t\v\\'\"þ")))
    (MessageField optional uint32 large_uint32 2 ((Option (default) 4294967295)))
    (MessageField optional uint64 large_uint64 3 ((Option (default) 18446744073709551615)))
    (MessageField optional int32 small_int32 4 ((Option (default) -2147483647)))
@@ -787,7 +789,8 @@
     ())
    (Extend
     TestParsingMerge
-    ((MessageField optional TestAllTypes optional_ext 1000 ()) (MessageField repeated TestAllTypes repeated_ext 1001 ()))))
+    ((MessageField optional TestAllTypes optional_ext 1000 ())
+     (MessageField repeated TestAllTypes repeated_ext 1001 ()))))
   ((MessageField required TestAllTypes required_all_types 1 ())
    (MessageField optional TestAllTypes optional_all_types 2 ())
    (MessageField repeated TestAllTypes repeated_all_types 3 ())

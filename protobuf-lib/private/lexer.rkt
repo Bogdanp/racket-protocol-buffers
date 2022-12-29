@@ -301,10 +301,9 @@
        [(octal-digit? chr)
         (define buf (open-output-bytes))
         (write-char chr buf)
-        (let ([digits (read-string 2 in)])
-          (when (eof-object? digits)
-            (error 'proto:string-escape "unexpected EOF while reading string octal escape"))
-          (write-string digits buf))
+        (let ([digits (regexp-try-match #rx"^[0-7]+" in 0 2)])
+          (when digits
+            (write-bytes (car digits) buf)))
         (define-values (seq code)
           (read-oct-char-code (open-input-bytes (get-output-bytes buf))))
         (define lit-str
