@@ -117,7 +117,7 @@
 
      (case v
        [(nan)
-        (make-token 'number s +nan.f)]
+        (make-token 'number s +nan.0)]
        [(inf)
         (make-token 'number s +inf.0)]
        [(true false)
