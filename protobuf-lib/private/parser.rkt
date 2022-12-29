@@ -2,8 +2,8 @@
 
 (require "common.rkt"
          "lexer.rkt"
-         "parser-v2.rkt"
-         "parser-v3.rkt")
+         "proto2.rkt"
+         "proto3.rkt")
 
 (provide
  current-source-name
@@ -22,4 +22,4 @@
      (skip l 'semicolon)
      (parse-proto3 l)]
     [else
-     (raise-parse-error syntax-tok (format "expected 'proto2' or 'proto3'~n  found: ~a" (token-str syntax-tok)))]))
+     (raise-parse-error syntax-tok "expected 'proto2' or 'proto3'")]))

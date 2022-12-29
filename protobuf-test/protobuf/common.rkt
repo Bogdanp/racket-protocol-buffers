@@ -12,7 +12,9 @@
   "examples")
 
 (define (parse-example name)
-  (parameterize ([port-count-lines-enabled #t])
-    (call-with-input-file (build-path examples name)
+  (define path (build-path examples name))
+  (parameterize ([port-count-lines-enabled #t]
+                 [current-source-name (path->string path)])
+    (call-with-input-file path
       (lambda (in)
         (->sexp (parse-proto (make-lexer in)))))))
