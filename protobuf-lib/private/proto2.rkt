@@ -58,7 +58,7 @@
 
 (define (parse-option* t l)
   (define path (parse-option-path l))
-  (skip l 'equal)
+  (skip l 'equals)
   (define value (parse-constant l))
   (Option t path value))
 
@@ -123,7 +123,7 @@
 (define (parse-enum-field l)
   (define t (lexer-peek l))
   (define ident (parse-ident l))
-  (skip l 'equal)
+  (skip l 'equals)
   (define value (parse-signed-int l))
   (EnumField t ident value (parse-field-options l)))
 
@@ -191,7 +191,7 @@
        [(group)
         (skip l 'keyword 'group)
         (define name (parse-ident l))
-        (skip l 'equal)
+        (skip l 'equals)
         (define number (parse-int l))
         (define-values (children fields options reserved extensions)
           (parse-message-fields l))
@@ -199,7 +199,7 @@
        [else
         (define type (parse-ident* l))
         (define name (parse-ident l))
-        (skip l 'equal)
+        (skip l 'equals)
         (define number (parse-int l))
         (define options (parse-field-options l))
         (skip l 'semicolon)
@@ -217,7 +217,7 @@
      (define val-type (parse-ident l))
      (skip l 'rangbrace)
      (define name (parse-ident l))
-     (skip l 'equal)
+     (skip l 'equals)
      (define number (parse-int l))
      (define options (parse-field-options l))
      (skip l 'semicolon)
@@ -246,7 +246,7 @@
   (define t (lexer-peek l))
   (define type (parse-ident* l))
   (define name (parse-ident l))
-  (skip l 'equal)
+  (skip l 'equals)
   (define number (parse-int l))
   (define options (parse-field-options l))
   (OneOfField t type name number options))

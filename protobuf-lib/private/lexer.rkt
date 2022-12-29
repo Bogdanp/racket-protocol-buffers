@@ -86,7 +86,7 @@
 
     [#\+ (make-token 'plus       (read-string 1 in))]
     [#\- (make-token 'minus      (read-string 1 in))]
-    [#\= (make-token 'equal      (read-string 1 in))]
+    [#\= (make-token 'equals     (read-string 1 in))]
     [#\; (make-token 'semicolon  (read-string 1 in))]
     [#\( (make-token 'lparen     (read-string 1 in))]
     [#\) (make-token 'rparen     (read-string 1 in))]

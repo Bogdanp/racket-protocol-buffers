@@ -11,7 +11,7 @@
 
 (define (parse-proto l)
   (skip l 'keyword 'syntax)
-  (skip l 'equal)
+  (skip l 'equals)
   (define syntax-tok
     (expect l 'string))
   (case (token-val syntax-tok)
