@@ -36,7 +36,7 @@
        (skip l 'semicolon))]
     [(package)
      (skip l 'keyword 'package)
-     (begin0 (Package t (parse-full-ident l))
+     (begin0 (Package t (parse-ident* l))
        (skip l 'semicolon))]
     [(option)
      (parse-option l)]
@@ -230,7 +230,8 @@
   (skip l 'equals)
   (define number (parse-int l))
   (define options (parse-field-options l))
-  (OneOfField t type name number options))
+  (skip l 'semicolon)
+  (MessageField t 'optional type name number options))
 
 (define (parse-service l)
   (define t (expect l 'keyword 'service))
@@ -379,9 +380,6 @@
 (define (parse-ident l)
   (token-val (expect l 'ident)))
 
-(define (parse-full-ident l)
-  (token-val (expect l 'full-ident)))
-
 (define (parse-sign l)
   (case (token-type (lexer-peek l))
     [(plus)
@@ -408,8 +406,8 @@
   (define t
     (lexer-peek l))
   (case (token-type t)
-    [(full-ident)
-     (parse-full-ident l)]
+    [(ident full-ident)
+     (parse-ident* l)]
     [(minus plus)
      (parse-signed-number l)]
     [(boolean string number)

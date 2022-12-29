@@ -116,6 +116,10 @@
        (proto:read-ident in))
 
      (case v
+       [(nan)
+        (make-token 'number s +nan.f)]
+       [(inf)
+        (make-token 'number s +inf.0)]
        [(true false)
         (make-token 'boolean s (eq? v 'true))]
        [(syntax import weak public package option message enum extend required optional

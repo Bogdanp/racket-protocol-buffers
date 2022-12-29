@@ -36,7 +36,6 @@
   [EnumField (name value options)]
   [Enum (name fields options reserved)]
   [Range (lo hi)]
-  [OneOfField (type name number options)]
   [MessageField (label type name number options)]
   [MessageGroupField (label name number children fields options reserved extensions)]
   [MessageOneOfField (name fields)]

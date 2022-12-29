@@ -6,6 +6,7 @@
          racket/runtime-path)
 
 (provide
+ examples
  parse-example)
 
 (define-runtime-path examples

@@ -36,7 +36,7 @@
        (skip l 'semicolon))]
     [(package)
      (skip l 'keyword 'package)
-     (begin0 (Package t (parse-full-ident l))
+     (begin0 (Package t (parse-ident* l))
        (skip l 'semicolon))]
     [(option)
      (parse-option l)]
@@ -170,7 +170,7 @@
           (define extensions-node
             (parse-extensions l))
           (loop children fields options reserved (cons extensions-node extensions))]
-         [(enum message)
+         [(enum message extend)
           (define child
             (parse-statement l))
           (loop (cons child children) fields options reserved extensions)]
@@ -187,23 +187,7 @@
     [(required optional repeated)
      (define label
        (token-val (expect l 'keyword)))
-     (case (token-val (lexer-peek l))
-       [(group)
-        (skip l 'keyword 'group)
-        (define name (parse-ident l))
-        (skip l 'equals)
-        (define number (parse-int l))
-        (define-values (children fields options reserved extensions)
-          (parse-message-fields l))
-        (MessageGroupField t label name number children fields options reserved extensions)]
-       [else
-        (define type (parse-ident* l))
-        (define name (parse-ident l))
-        (skip l 'equals)
-        (define number (parse-int l))
-        (define options (parse-field-options l))
-        (skip l 'semicolon)
-        (MessageField t label type name number options)])]
+     (parse-field* t l label)]
     [(oneof)
      (skip l 'keyword 'oneof)
      (define name (parse-ident l))
@@ -242,18 +226,31 @@
       [else
        (loop (cons entry entries))])))
 
+(define (parse-field* t l [label 'optional])
+  (case (token-val (lexer-peek l))
+    [(group)
+     (skip l 'keyword 'group)
+     (define name (parse-ident l))
+     (skip l 'equals)
+     (define number (parse-int l))
+     (define-values (children fields options reserved extensions)
+       (parse-message-fields l))
+     (MessageGroupField t label name number children fields options reserved extensions)]
+    [else
+     (define type (parse-ident* l))
+     (define name (parse-ident l))
+     (skip l 'equals)
+     (define number (parse-int l))
+     (define options (parse-field-options l))
+     (skip l 'semicolon)
+     (MessageField t label type name number options)]))
+
 (define (parse-oneof-field l)
-  (define t (lexer-peek l))
-  (define type (parse-ident* l))
-  (define name (parse-ident l))
-  (skip l 'equals)
-  (define number (parse-int l))
-  (define options (parse-field-options l))
-  (OneOfField t type name number options))
+  (parse-field* (lexer-peek l) l))
 
 (define (parse-extend l)
   (define t (expect l 'keyword 'extend))
-  (define name (parse-ident l))
+  (define name (parse-ident* l))
   (define fields (parse-body l parse-message-field))
   (Extend t name fields))
 
@@ -407,9 +404,6 @@
 (define (parse-ident l)
   (token-val (expect l 'ident)))
 
-(define (parse-full-ident l)
-  (token-val (expect l 'full-ident)))
-
 (define (parse-sign l)
   (case (token-type (lexer-peek l))
     [(plus)
@@ -436,8 +430,8 @@
   (define t
     (lexer-peek l))
   (case (token-type t)
-    [(full-ident)
-     (parse-full-ident l)]
+    [(ident full-ident)
+     (parse-ident* l)]
     [(minus plus)
      (parse-signed-number l)]
     [(boolean string number)

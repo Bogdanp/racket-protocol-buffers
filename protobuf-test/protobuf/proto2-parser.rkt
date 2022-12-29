@@ -55,7 +55,14 @@
          SearchService
          ((RPC Search #f SearchRequest #f SearchResponse ()))
          ()
-         ()))))))
+         ()))))
+
+   (test-case "parse example proto from protoscope test suite"
+     (define expected
+       (call-with-input-file (build-path examples "proto2-protoscope-unittest.ast.rktd") read))
+     (check-equal?
+      (parse-example "proto2-protoscope-unittest.proto")
+      expected))))
 
 (module+ test
   (require rackunit/text-ui)
