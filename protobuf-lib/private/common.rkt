@@ -10,7 +10,7 @@
  skip)
 
 (define current-source-name
-  (make-parameter #f))
+  (make-parameter "<string>"))
 
 (define (raise-parse-error t message)
   (raise-read-error
