@@ -1,7 +1,7 @@
 #lang racket/base
 
-(require "common.rkt"
-         "lexer.rkt"
+(require "lexer.rkt"
+         "parser-common.rkt"
          "proto2.rkt"
          "proto3.rkt")
 
