@@ -25,6 +25,7 @@
 
 (struct lexer
   (in
+   buf
    skip-comments?
    partial-strings?
    [pending #:mutable])
@@ -33,7 +34,8 @@
 (define (make-lexer in
                     #:skip-comments? [skip-comments? #t]
                     #:partial-strings? [partial-strings? #f])
-  (lexer in skip-comments? partial-strings? #f))
+  (define buf (open-output-bytes))
+  (lexer in buf skip-comments? partial-strings? #f))
 
 (define (lexer-peek l)
   (cond
@@ -54,13 +56,10 @@
      (lexer-read-token l)]))
 
 (define (lexer-read-token l)
-  (define skip-comments?
-    (lexer-skip-comments? l))
-  (define partial-strings?
-    (lexer-partial-strings? l))
+  (match-define (lexer in buf skip-comments? partial-strings? _) l)
   (let loop ()
     (define t
-      (read-token (lexer-in l) partial-strings?))
+      (read-token in buf partial-strings?))
     (case (token-type t)
       [(comment whitespace)
        (if skip-comments? (loop) t)]
@@ -70,50 +69,50 @@
 
 ;; readers ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define (read-token in [partial-strings? #f])
+(define (read-token in buf [partial-strings? #f])
   (define-values (line col pos)
     (port-next-location in))
 
-  (define (make-token type str [val str])
+  (define (make-token type [str (read-string 1 in)] [val str])
     (token type str val line col pos))
 
   (match (peek-char in)
-    [(? eof-object?) (make-token 'eof        (read-string 1 in))]
-    [(? whitespace?) (make-token 'whitespace (read-whitespace in))]
+    [(? eof-object?) (make-token 'eof eof)]
+    [(? whitespace?) (make-token 'whitespace (read-whitespace in buf))]
 
     [#\/ #:when (equal? (peek-string 2 0 in) "//")
      (make-token 'comment (read-line in))]
 
-    [#\+ (make-token 'plus       (read-string 1 in))]
-    [#\- (make-token 'minus      (read-string 1 in))]
-    [#\= (make-token 'equals     (read-string 1 in))]
-    [#\; (make-token 'semicolon  (read-string 1 in))]
-    [#\( (make-token 'lparen     (read-string 1 in))]
-    [#\) (make-token 'rparen     (read-string 1 in))]
-    [#\[ (make-token 'lsqbrace   (read-string 1 in))]
-    [#\] (make-token 'rsqbrace   (read-string 1 in))]
-    [#\{ (make-token 'lcubrace   (read-string 1 in))]
-    [#\} (make-token 'rcubrace   (read-string 1 in))]
-    [#\< (make-token 'langbrace  (read-string 1 in))]
-    [#\> (make-token 'rangbrace  (read-string 1 in))]
-    [#\, (make-token 'comma      (read-string 1 in))]
+    [#\+ (make-token 'plus)]
+    [#\- (make-token 'minus)]
+    [#\= (make-token 'equals)]
+    [#\; (make-token 'semicolon)]
+    [#\( (make-token 'lparen)]
+    [#\) (make-token 'rparen)]
+    [#\[ (make-token 'lsqbrace)]
+    [#\] (make-token 'rsqbrace)]
+    [#\{ (make-token 'lcubrace)]
+    [#\} (make-token 'rcubrace)]
+    [#\< (make-token 'langbrace)]
+    [#\> (make-token 'rangbrace)]
+    [#\, (make-token 'comma)]
 
     [#\. #:when (not (decimal-digit? (peek-char in 1)))
-     (make-token 'dot (read-string 1 in))]
+     (make-token 'dot)]
 
     [(or #\' #\")
      (define-values (s v)
-       (proto:read-string in partial-strings?))
+       (proto:read-string in partial-strings? buf))
      (make-token 'string s v)]
 
     [(? number-start?)
      (define-values (s v)
-       (proto:read-number in))
+       (proto:read-number in buf))
      (make-token 'number s v)]
 
     [(? ident-start?)
      (define-values (s v)
-       (proto:read-ident in))
+       (proto:read-ident in buf))
 
      (case v
        [(nan)
@@ -136,27 +135,26 @@
 
 ;; helpers ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define (read-whitespace in)
-  (read-string-while in whitespace?))
+(define (read-whitespace in buf)
+  (read-string-while in whitespace? buf))
 
-(define (read-string-while in p)
-  (call-with-output-string
-   (lambda (out)
-     (read-while in p (λ (c) (write-char c out))))))
+(define (read-string-while in p [buf (open-output-bytes)])
+  (read-while in p (λ (c) (write-char c buf)))
+  (get-output-string* buf))
 
 (define (read-while in p proc)
   (define-values (line col pos)
     (port-next-location in))
-
-  (with-handlers ([exn:fail?
-                   (λ (e)
-                     (raise-lexer-error (exn-message e) line col pos))])
+  (with-handlers ([exn:fail? (λ (e) (raise-lexer-error (exn-message e) line col pos))])
     (let loop ([c (peek-char in)] [p p])
       (define next-p
         (p c))
       (when next-p
         (proc (read-char in))
         (loop (peek-char in) next-p)))))
+
+(define (get-output-string* buf)
+  (bytes->string/utf-8 (get-output-bytes buf #t) #\uFFFD))
 
 
 ;; matchers ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -187,7 +185,7 @@
    (char? c)
    (or (char=? c #\_)
        (char=? c #\.)
-       (member (char-general-category c) char-categories))
+       (memq (char-general-category c) char-categories))
    ident-more?))
 
 (define ident-start? (make-ident-predicate '(ll lu)))
@@ -233,8 +231,8 @@
 
 ;; readers ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(define ((make-reader p f) in)
-  (define s (read-string-while in p))
+(define ((make-reader p f) in [buf (open-output-bytes)])
+  (define s (read-string-while in p buf))
   (values s (f s)))
 
 (define proto:read-ident
@@ -246,10 +244,10 @@
                                    (string->number (string-append "#x" (substring s 2)) 16)
                                    (string->number s)))))
 
-(define (proto:read-string in [partial? #f])
+(define (proto:read-string in [partial? #f] [buf #f])
   (define quote-char (read-char in))
   (define lit-str (open-output-string))
-  (define actual-str (open-output-string))
+  (define actual-str (or buf (open-output-string)))
   (write-char quote-char lit-str)
   (write-char quote-char actual-str)
   (define has-end-quote?
@@ -276,7 +274,7 @@
            [(eqv? char quote-char) #t]
            [else  (loop #f)])])))
   (define str
-    (let ([str (get-output-string actual-str)])
+    (let ([str (get-output-string* actual-str)])
       (substring str 1 ((if has-end-quote? sub1 values) (string-length str)))))
   (values (get-output-string lit-str) str))
 
