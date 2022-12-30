@@ -137,24 +137,26 @@
 ;; helpers ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define (read-whitespace in)
-  (take-while in whitespace?))
+  (read-string-while in whitespace?))
 
-(define (take-while in p)
+(define (read-string-while in p)
+  (call-with-output-string
+   (lambda (out)
+     (read-while in p (λ (c) (write-char c out))))))
+
+(define (read-while in p proc)
   (define-values (line col pos)
     (port-next-location in))
 
-  (with-output-to-string
-    (lambda ()
-      (let loop ([p p]
-                 [c (peek-char in)]
-                 [span 0])
-        (define next-p
-          (with-handlers ([exn:fail? (λ (e) (raise-lexer-error (exn-message e) line col pos))])
-            (p c)))
-
-        (when next-p
-          (display (read-char in))
-          (loop next-p (peek-char in) (add1 span)))))))
+  (with-handlers ([exn:fail?
+                   (λ (e)
+                     (raise-lexer-error (exn-message e) line col pos))])
+    (let loop ([c (peek-char in)] [p p])
+      (define next-p
+        (p c))
+      (when next-p
+        (proc (read-char in))
+        (loop (peek-char in) next-p)))))
 
 
 ;; matchers ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -232,7 +234,7 @@
 ;; readers ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define ((make-reader p f) in)
-  (define s (take-while in p))
+  (define s (read-string-while in p))
   (values s (f s)))
 
 (define proto:read-ident
