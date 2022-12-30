@@ -1,13 +1,13 @@
 #lang racket/base
 
-(require "ast.rkt"
-         "lexer.rkt"
-         "parser-common.rkt")
+(require "../ast.rkt"
+         "../lexer.rkt"
+         "common.rkt")
 
 (provide
- parse-proto3)
+ parse-proto2)
 
-(define (parse-proto3 l)
+(define (parse-proto2 l)
   (let loop ([stmts null])
     (case (token-type (lexer-peek l))
       [(eof)
@@ -38,6 +38,8 @@
      (parse-message l)]
     [(enum)
      (parse-enum l)]
+    [(extend)
+     (parse-extend l)]
     [(service)
      (parse-service l)]
     [else
@@ -46,16 +48,18 @@
 (define (parse-message l)
   (define t (expect l 'keyword 'message))
   (define ident (parse-ident l))
-  (define-values (children fields options reserved)
+  (define-values (children fields options reserved extensions)
     (parse-message-fields l))
-  (Message t ident children fields options reserved null))
+  (Message t ident children fields options reserved extensions))
 
 (define (parse-message-fields l)
+  (define t (lexer-peek l))
   (skip l 'lcubrace)
   (let loop ([children null]
              [fields null]
              [options null]
-             [reserved null])
+             [reserved null]
+             [extensions null])
     (define ft
       (lexer-peek l))
     (case (token-type ft)
@@ -65,36 +69,43 @@
         (reverse children)
         (reverse fields)
         (reverse options)
-        (reverse reserved))]
+        (reverse reserved)
+        (reverse extensions))]
       [(semicolon)
        (skip l 'semicolon)
-       (loop children fields options reserved)]
+       (loop children fields options reserved extensions)]
       [(keyword)
        (case (token-val ft)
          [(option)
           (define option
             (parse-option l))
-          (loop children fields (cons option options) reserved)]
+          (loop children fields (cons option options) reserved extensions)]
          [(reserved)
           (define reserved-node
             (parse-reserved l))
-          (loop children fields options (cons reserved-node reserved))]
-         [(enum message)
+          (loop children fields options (cons reserved-node reserved) extensions)]
+         [(extensions)
+          (define extensions-node
+            (parse-extensions l))
+          (loop children fields options reserved (cons extensions-node extensions))]
+         [(enum message extend)
           (define child
             (parse-statement l))
-          (loop (cons child children) fields options reserved)]
+          (loop (cons child children) fields options reserved extensions)]
          [else
           (define field
             (parse-message-field l))
-          (loop children (cons field fields) options reserved)])]
+          (loop children (cons field fields) options reserved extensions)])]
       [else
-       (define field
-         (parse-message-field l))
-       (loop children (cons field fields) options reserved)])))
+       (raise-parse-error t "expected 'option', 'reserved', 'extensions', 'enum', 'message' or a field")])))
 
 (define (parse-message-field l)
   (define t (lexer-peek l))
   (case (token-val t)
+    [(required optional repeated)
+     (define label
+       (token-val (expect l 'keyword)))
+     (parse-field* t l label)]
     [(oneof)
      (skip l 'keyword 'oneof)
      (define name (parse-ident l))
@@ -114,8 +125,19 @@
      (skip l 'semicolon)
      (MessageMapField t key-type val-type name number options)]
     [else
-     (define label
-       (or (parse-maybe-keyword l 'repeated) 'optional))
+     (raise-parse-error t "expected 'required', 'optional', 'repeated', 'oneof' or 'map'")]))
+
+(define (parse-field* t l [label 'optional])
+  (case (token-val (lexer-peek l))
+    [(group)
+     (skip l 'keyword 'group)
+     (define name (parse-ident l))
+     (skip l 'equals)
+     (define number (parse-int l))
+     (define-values (children fields options reserved extensions)
+       (parse-message-fields l))
+     (MessageGroupField t label name number children fields options reserved extensions)]
+    [else
      (define type (parse-ident* l))
      (define name (parse-ident l))
      (skip l 'equals)
@@ -125,42 +147,46 @@
      (MessageField t label type name number options)]))
 
 (define (parse-oneof-field l)
-  (define t (lexer-peek l))
-  (define type (parse-ident* l))
-  (define name (parse-ident l))
-  (skip l 'equals)
-  (define number (parse-int l))
-  (define options (parse-field-options l))
-  (skip l 'semicolon)
-  (MessageField t 'optional type name number options))
+  (parse-field* (lexer-peek l) l))
+
+(define (parse-extend l)
+  (define t (expect l 'keyword 'extend))
+  (define name (parse-ident* l))
+  (define fields (parse-body l parse-message-field))
+  (Extend t name fields))
 
 (define (parse-service l)
   (define t (expect l 'keyword 'service))
   (define name (parse-ident l))
   (skip l 'lcubrace)
   (let loop ([rpcs null]
+             [streams null]
              [options null])
     (define ft
       (lexer-peek l))
     (case (token-type ft)
       [(rcubrace)
        (skip l 'rcubrace)
-       (Service t name (reverse rpcs) null (reverse options))]
+       (Service t name (reverse rpcs) (reverse streams) (reverse options))]
       [(semicolon)
        (skip l 'semicolon)
-       (loop rpcs options)]
+       (loop rpcs streams options)]
       [(keyword)
        (case (token-val ft)
          [(option)
           (define option
             (parse-option l))
-          (loop rpcs (cons option options))]
+          (loop rpcs streams (cons option options))]
          [(rpc)
           (define rpc
             (parse-rpc l))
-          (loop (cons rpc rpcs) options)]
+          (loop (cons rpc rpcs) streams options)]
+         [(stream)
+          (define stream
+            (parse-stream l))
+          (loop rpcs (cons stream streams) options)]
          [else
-          (raise-parse-error t "expected 'option' or 'rpc'")])]
+          (raise-parse-error t "expected 'option', 'rpc' or 'stream'")])]
       [else
        (raise-parse-error t "expected service definition")])))
 
@@ -181,3 +207,15 @@
   (define options
     (parse-options-or-semicolon l))
   (RPC t name stream-domain? domain stream-range? range options))
+
+(define (parse-stream l)
+  (define t (expect l 'keyword 'stream))
+  (define name (parse-ident l))
+  (skip l 'lparen)
+  (define domain (parse-ident* l))
+  (skip l 'comma)
+  (define range (parse-ident* l))
+  (skip l 'rparen)
+  (define options
+    (parse-options-or-semicolon l))
+  (Stream t name domain range options))

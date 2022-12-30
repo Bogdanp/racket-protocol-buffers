@@ -1,8 +1,8 @@
 #lang racket/base
 
 (require syntax/readerr
-         "ast.rkt"
-         "lexer.rkt")
+         "../ast.rkt"
+         "../lexer.rkt")
 
 ;; parsers ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 

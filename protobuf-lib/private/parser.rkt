@@ -1,9 +1,9 @@
 #lang racket/base
 
 (require "lexer.rkt"
-         "parser-common.rkt"
-         "proto2.rkt"
-         "proto3.rkt")
+         "parser/common.rkt"
+         "parser/proto2.rkt"
+         "parser/proto3.rkt")
 
 (provide
  current-source-name
