@@ -13,15 +13,17 @@
 (define Outer
   (car (mod-messages mod)))
 
+(define data
+  (hasheq 'enum_field 'EAA_STARTED
+          'my_map (hash 5 "hello")
+          'inner_message (list (hasheq 'ival -1024))))
+
 (call-with-output-file (build-path here "example.dat")
   #:exists 'replace
   (lambda (out)
-    (define data
-      (hasheq 'enum_field 'EAA_STARTED
-              'my_map (hasheq 5 "hello")
-              'inner_message (hasheq 'ival -1024)))
     (write-message Outer data out)))
 
-(call-with-input-file (build-path here "example.dat")
-  (lambda (in)
-    (read-message Outer in)))
+(equal? data
+        (call-with-input-file (build-path here "example.dat")
+          (lambda (in)
+            (read-message Outer in))))
