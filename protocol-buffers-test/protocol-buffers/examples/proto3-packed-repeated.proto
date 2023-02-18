@@ -1,0 +1,10 @@
+syntax = "proto3";
+
+message Foo {
+  message Inner {
+    string s = 1;
+  }
+  repeated int64 x = 1;
+  int64 y = 2;
+  repeated Inner i = 3;
+}

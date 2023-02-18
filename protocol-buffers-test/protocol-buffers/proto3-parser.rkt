@@ -44,6 +44,19 @@
          SearchService
          ((RPC Search #f SearchRequest #f SearchResponse ()))
          ()
+         ()))))
+
+   (test-case "parse .proto file with repeated scalar"
+     (check-equal?
+      (parse-example "proto3-packed-repeated.proto")
+      '((Message
+         Foo
+         ((Message Inner () ((MessageField optional string s 1 ())) () () ()))
+         ((MessageField repeated int64 x 1 ((Option (packed) #t)))
+          (MessageField optional int64 y 2 ())
+          (MessageField repeated Inner i 3 ()))
+         ()
+         ()
          ()))))))
 
 (module+ test

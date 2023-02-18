@@ -120,7 +120,11 @@
      (define name (parse-ident l))
      (skip l 'equals)
      (define number (parse-int l))
-     (define options (parse-field-options l))
+     (define options
+       (let ([options (parse-field-options l)])
+         (if (and (eq? label 'repeated) (scalar-type? type))
+             (cons (Option #f '(packed) #t) options)
+             options)))
      (skip l 'semicolon)
      (MessageField t label type name number options)]))
 
@@ -181,3 +185,6 @@
   (define options
     (parse-options-or-semicolon l))
   (RPC t name stream-domain? domain stream-range? range options))
+
+(define (scalar-type? t)
+  (and (memq t '(bool bytes double fixed32 fixed64 float int32 int64 sfixed32 sfixed64 sint32 sint64string uint32 uint64)) #t))
