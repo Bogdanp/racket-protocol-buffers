@@ -4,8 +4,7 @@
          racket/port
          "private/lexer.rkt"
          "private/module.rkt"
-         "private/parser.rkt"
-         "private/write.rkt")
+         "private/parser.rkt")
 
 (provide
  (contract-out
@@ -28,3 +27,6 @@
 
 (define (mod-messages m)
   (filter message? (mod-types m)))
+
+(define (write-message m v [out (current-output-port)])
+  ((message-writer m) #f v out))

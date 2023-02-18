@@ -1,10 +1,13 @@
 #lang racket/base
 
 (require racket/match
+         racket/port
+         racket/string
          (prefix-in ast: "ast.rkt")
          "lexer.rkt"
          "logger.rkt"
-         "parser.rkt")
+         "parser.rkt"
+         "write.rkt")
 
 (provide
  make-mod
@@ -71,7 +74,7 @@
 (provide
  (struct-out enum))
 
-(struct enum (name options fields))
+(struct enum (name options writer))
 
 (define (make-enum name field-nodes option-nodes reserved)
   (define reserved? (make-reserved?-proc reserved))
@@ -83,19 +86,22 @@
          (when (reserved? (symbol->string name) value)
            (oops tok "field ~a is reserved" name))
          (values name value)])))
-  (enum name options fields))
+  (enum name options (make-enum-writer name fields)))
+
+(define ((make-enum-writer enum-name fields) num name value out)
+  (unless (hash-has-key? fields value)
+    (error 'write-enum "enum ~a does not have a case named ~e~n  field: ~a" enum-name value name))
+  (write-proto-int32 num name (hash-ref fields value) out))
 
 
 ;; message ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (provide
- (struct-out map-type)
  (struct-out message)
  (struct-out message-field))
 
-(struct map-type (k-type v-type))
-(struct message-field (label type name options))
-(struct message (name options fields))
+(struct message-field (label num options writer))
+(struct message (name options writer))
 
 (define (make-message name children field-nodes option-nodes reserved _extensions env)
   (define reserved? (make-reserved?-proc reserved))
@@ -112,34 +118,105 @@
       [_
        (log-protobuf-warning "ignoring node ~e (child of message ~a)" node name)]))
   (define fields
-    (let loop ([fields (hasheqv)]
+    (let loop ([fields (hasheq)]
                [nodes field-nodes])
       (for/fold ([fields fields])
                 ([node (in-list nodes)])
         (match node
-          [(ast:MessageField tok label type name number options)
+          [(ast:MessageField tok label type name number option-nodes)
            (when (reserved? (symbol->string name) number)
              (oops tok "field ~a is reserved" name))
-           (define f (message-field label (get-type tok message-env type) name (make-options options)))
-           (hash-set fields number f)]
+           (define options (make-options option-nodes))
+           (define writer (get-writer tok message-env type))
+           (define f (message-field label number options writer))
+           (hash-set fields name f)]
           [(ast:MessageOneOfField _ _ field-nodes)
            ;; FIXME: enforce disjunction?
            (loop fields field-nodes)]
-          [(ast:MessageMapField tok key-type val-type name number options)
+          [(ast:MessageMapField tok key-type val-type name number option-nodes)
            (when (reserved? (symbol->string name) number)
              (oops tok "field ~a is reserved" name))
-           (define k (get-type tok message-env key-type))
-           (define v (get-type tok message-env val-type))
-           (define f (message-field #f (map-type k v) name (make-options options)))
-           (hash-set fields number f)]
+           (define options (make-options option-nodes))
+           (define k-writer (get-writer tok message-env key-type))
+           (define v-writer (get-writer tok message-env val-type))
+           (define writer (make-map-writer k-writer v-writer))
+           (define f (message-field #f number options writer))
+           (hash-set fields name f)]
           [_
            (log-protobuf-warning "ignoring field node ~e" node)]))))
-  (message name options fields))
+  (message name options (make-message-writer name fields)))
 
-(define (get-type tok e t)
+(define (make-message-writer message-name fields)
+  (define-values (required-fields repeated-fields)
+    (for/fold ([required-fields null]
+               [repeated-fields null])
+              ([(name f) (in-hash fields)])
+      (match-define (message-field label _num _options _writer) f)
+      (values
+       (if (eq? label 'optional) required-fields (cons name required-fields))
+       (if (eq? label 'repeated) (cons name repeated-fields) repeated-fields))))
+  (lambda (name value out)
+    (unless (hash? value)
+      (if name
+          (error 'write-message "expected a hash~n  got: ~e~n  field: ~a" value name)
+          (error 'write-message "expected a hash for Message ~a~n  got: ~e" message-name value)))
+    (define missing-required-fields
+      (for/fold ([missing-required-fields required-fields])
+                ([(k v) (in-hash value)])
+        (match-define (message-field _label num _options writer)
+          (hash-ref fields k (λ () (error 'write-message "unknown field ~a for Message ~a" k message-name))))
+        (cond
+          [(pair? v)
+           ;; TODO: Support for packed fields.
+           (unless (memv k repeated-fields)
+             (error 'write-message "received list but field ~a for Message ~a is not repeated" k message-name))
+           (for ([v (in-list v)])
+             (writer num name v out))]
+          [else
+           (writer num name v out)])
+        (remq k missing-required-fields)))
+    (unless (null? missing-required-fields)
+      (define fields-str (string-join (map symbol->string missing-required-fields) ", "))
+      (error 'write-message "missing required fields for Message ~a: ~a" message-name fields-str))))
+
+(define ((make-map-writer k-writer v-writer) num name value out)
+  (unless (hash? value)
+    (error 'write-map "expected a hash~n  got: ~e~n  field: ~a" value name))
+  (define bs
+    (call-with-output-bytes
+     (lambda (bs-out)
+       (for ([(k v) (in-hash value)])
+         (k-writer 1 "map key" k bs-out)
+         (v-writer 2 "map value" v bs-out)))))
+  (write-proto-bytes num name bs out))
+
+(define (get-writer tok e t)
   (case t
-    [(double float int32 int64 uint32 uint64 sint32 sint64 fixed32 fixed64 sfixed32 sfixed64 bool string bytes) t]
-    [else (env-ref e t (λ () (oops tok "unknown type ~a" t)))]))
+    [(bool) write-proto-bool]
+    [(bytes) write-proto-bytes]
+    [(double) write-proto-double]
+    [(fixed32) write-proto-fixed32]
+    [(fixed64) write-proto-fixed64]
+    [(float) write-proto-float]
+    [(int32) write-proto-int32]
+    [(int64) write-proto-int64]
+    [(sfixed32) write-proto-sfixed32]
+    [(sfixed64) write-proto-sfixed64]
+    [(sint32) write-proto-sint32]
+    [(sint64) write-proto-sint64]
+    [(string) write-proto-string]
+    [(uint32) write-proto-uint32]
+    [(uint64) write-proto-uint64]
+    [else
+     (match (env-ref e t (λ () (oops tok "undefined type ~a" t)))
+       [(enum _name _options writer) writer]
+       [(message _name _options writer)
+        (λ (num name value out)
+          (define bs
+            (call-with-output-bytes
+             (lambda (bs-out)
+               (writer name value bs-out))))
+          (write-proto-bytes num name bs out))])]))
 
 
 ;; env ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
