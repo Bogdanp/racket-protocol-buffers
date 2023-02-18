@@ -1,6 +1,7 @@
 #lang racket/base
 
 (require "../ast.rkt"
+         "../common.rkt"
          "../lexer.rkt"
          "common.rkt")
 
@@ -185,6 +186,3 @@
   (define options
     (parse-options-or-semicolon l))
   (RPC t name stream-domain? domain stream-range? range options))
-
-(define (scalar-type? t)
-  (and (memq t '(bool bytes double fixed32 fixed64 float int32 int64 sfixed32 sfixed64 sint32 sint64string uint32 uint64)) #t))

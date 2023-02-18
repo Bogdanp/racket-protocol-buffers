@@ -10,7 +10,8 @@
  write-proto-bytes)
 
 (define (write-proto-tag num tag out)
-  (write-uvarint (fxior (fxlshift num 3) tag) out))
+  (when num
+    (write-uvarint (fxior (fxlshift num 3) tag) out)))
 
 (define (write-proto-bool num _name value out)
   (write-proto-int32 num (if value 1 0) out))

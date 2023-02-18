@@ -1,9 +1,11 @@
 #lang racket/base
 
-(require racket/match
+(require racket/fixnum
+         racket/match
          racket/port
          racket/string
-         (prefix-in ast: "ast.rkt")
+         "ast.rkt"
+         "common.rkt"
          "lexer.rkt"
          "logger.rkt"
          "parser.rkt"
@@ -27,7 +29,7 @@
                [types null])
               ([node (in-list nodes)])
       (match node
-        [(ast:Import _ qualifier path)
+        [(Import _ qualifier path)
          (call-with-input-file path
            (lambda (in)
              (define l (make-lexer in))
@@ -41,28 +43,28 @@
              (if (eq? qualifier 'public)
                  (values package options (append types (reverse (mod-types m))))
                  (values package options types))))]
-        [(ast:Package tok _)
+        [(Package tok _)
          #:when package
          (oops tok "package already declared")]
-        [(ast:Package _ name)
+        [(Package _ name)
          (values name options types)]
-        [(ast:Option _ path value)
+        [(Option _ path value)
          (values package (hash-set options path value) types)]
-        [(ast:Enum _ name fields options reserved)
+        [(Enum _ name fields options reserved)
          (define e (make-enum name fields options reserved))
          (env-set! env name e)
          (values package options (cons e types))]
-        [(ast:Message _ name children fields options reserved extensions)
+        [(Message _ name children fields options reserved extensions)
          (define m (make-message name children fields options reserved extensions env))
          (env-set! env name m)
          (values package options (cons m types))]
-        [(ast:RPC _ name _stream-domain? _domain _stream-range _range? _options)
+        [(RPC _ name _stream-domain? _domain _stream-range _range? _options)
          (log-protobuf-warning "skipping RPC definition ~a" name)
          (values package options types)]
-        [(ast:Stream _ name _domain _range _options)
+        [(Stream _ name _domain _range _options)
          (log-protobuf-warning "skipping Stream definition ~a" name)
          (values package options types)]
-        [(ast:Service _ name _rpcs _streams _options)
+        [(Service _ name _rpcs _streams _options)
          (log-protobuf-warning "skipping Service definition ~a" name)
          (values package options types)]
         [_
@@ -83,7 +85,7 @@
   (define fields
     (for/hasheq ([node (in-list field-nodes)])
       (match node
-        [(ast:EnumField tok name value _options)
+        [(EnumField tok name value _options)
          (when (reserved? (symbol->string name) value)
            (oops tok "field ~a is reserved" name))
          (values name value)])))
@@ -111,7 +113,7 @@
  (struct-out message)
  (struct-out message-field))
 
-(struct message-field (name num options reader writer))
+(struct message-field (name num flags reader writer))
 (struct message (name options reader writer))
 
 (define (make-message name children field-nodes option-nodes reserved _extensions env)
@@ -120,56 +122,69 @@
   (define message-env (make-env env))
   (for ([node (in-list children)])
     (match node
-      [(ast:Enum _ name fields options reserved)
+      [(Enum _ name fields options reserved)
        (define e (make-enum name fields options reserved))
        (env-set! message-env name e)]
-      [(ast:Message _ name children fields options reserved extensions)
+      [(Message _ name children fields options reserved extensions)
        (define m (make-message name children fields options reserved extensions message-env))
        (env-set! message-env name m)]
       [_
        (log-protobuf-warning "ignoring node ~e (child of message ~a)" node name)]))
-  (define-values (fields required repeated)
+  (define-values (fields required)
     (let loop ([fields (hasheq)]
                [required null]
-               [repeated null]
                [nodes field-nodes])
       (for/fold ([fields fields]
-                 [required required]
-                 [repeated repeated])
+                 [required required])
                 ([node (in-list nodes)])
         (match node
-          [(ast:MessageField tok label type name number option-nodes)
+          [(MessageField tok label type name number option-nodes)
            (when (reserved? (symbol->string name) number)
              (oops tok "field ~a is reserved" name))
+           (define optional? (eq? label 'optional))
+           (define repeated? (eq? label 'repeated))
            (define options (make-options option-nodes))
-           (define reader (get-reader tok message-env type))
-           (define writer (get-writer tok message-env type))
-           (define f (message-field name number options reader writer))
+           (define packed? (and repeated?
+                                (scalar-type? type)
+                                (hash-ref options '(packed) #f)))
+           (define flags
+             (fxior (if optional? optional-mask 0)
+                    (if repeated? repeated-mask 0)
+                    (if packed? packed-mask 0)))
+           (define reader
+             ((if packed?
+                  get-packed-reader
+                  get-reader)
+              tok message-env type))
+           (define writer
+             ((cond
+                [packed? get-packed-writer]
+                [repeated? get-repeated-writer]
+                [else get-writer]) tok message-env type))
+           (define f (message-field name number flags reader writer))
            (values (hash-set fields name f)
-                   (if (eq? label 'optional) required (cons name required))
-                   (if (eq? label 'repeated) (cons name repeated) repeated))]
-          [(ast:MessageOneOfField _ _ field-nodes)
+                   (if optional? required (cons name required)))]
+          [(MessageOneOfField _ _ field-nodes)
            (loop fields field-nodes)]
-          [(ast:MessageMapField tok key-type val-type name number option-nodes)
+          [(MessageMapField tok key-type val-type name number _option-nodes)
            (when (reserved? (symbol->string name) number)
              (oops tok "field ~a is reserved" name))
-           (define options (make-options option-nodes))
            (define k-reader (get-reader tok message-env key-type))
            (define k-writer (get-writer tok message-env key-type))
            (define v-reader (get-reader tok message-env val-type))
            (define v-writer (get-writer tok message-env val-type))
            (define reader (make-map-reader k-reader v-reader))
            (define writer (make-map-writer k-writer v-writer))
-           (define f (message-field name number options reader writer))
-           (values (hash-set fields name f) required repeated)]
+           (define f (message-field name number 0 reader writer))
+           (values (hash-set fields name f) required)]
           [_
            (log-protobuf-warning "ignoring field node ~e" node)
-           (values fields required repeated)]))))
-  (define reader (make-message-reader name fields required repeated))
-  (define writer (make-message-writer name fields required repeated))
+           (values fields required)]))))
+  (define reader (make-message-reader name fields required))
+  (define writer (make-message-writer name fields required))
   (message name options reader writer))
 
-(define (make-message-reader message-name fields required repeated)
+(define (make-message-reader message-name fields required)
   (define numbers-to-fields
     (for/hasheqv ([f (in-hash-values fields)])
       (values (message-field-num f) f)))
@@ -186,21 +201,27 @@
           [else
            (define-values (num tag)
              (read-proto-tag in))
-           (match-define (message-field name _number _options reader _writer)
+           (match-define (message-field name _number flags reader _writer)
              (hash-ref numbers-to-fields num (λ () (error 'read-message "no field with number ~a in Message ~a" num message-name))))
            (define v
              (reader tag in))
            (loop
             (remq name missing)
-            (if (memq name repeated)
-                (hash-update res name (λ (vs) (cons v vs)) null)
+            (if (repeated? flags)
+                (hash-update
+                 res name
+                 (λ (vs)
+                   (if (pair? v)
+                       (append (reverse v) vs)
+                       (cons v vs)))
+                 null)
                 (hash-set res name v)))])))
     (begin0 res
       (unless (null? missing)
         (define fields-str (string-join (map symbol->string missing) ", "))
         (error 'read-message "missing required fields for Message ~a: ~a" message-name fields-str)))))
 
-(define ((make-message-writer message-name fields required repeated) name value out)
+(define ((make-message-writer message-name fields required) name value out)
   (unless (hash? value)
     (if name
         (error 'write-message "expected a hash~n  got: ~e~n  field: ~a" value name)
@@ -208,40 +229,39 @@
   (define missing
     (for/fold ([missing required])
               ([(k v) (in-hash value)])
-      (match-define (message-field _name num _options _reader writer)
+      (match-define (message-field name num _flags _reader writer)
         (hash-ref fields k (λ () (error 'write-message "unknown field ~a for Message ~a" k message-name))))
-      (cond
-        [(pair? v)
-         ;; TODO: Support for packed fields.
-         (unless (memv k repeated)
-           (error 'write-message "received list but field ~a for Message ~a is not repeated" k message-name))
-         (for ([v (in-list v)])
-           (writer num name v out))]
-        [else
-         (writer num name v out)])
+      (writer num name v out)
       (remq k missing)))
   (unless (null? missing)
     (define fields-str (string-join (map symbol->string missing) ", "))
     (error 'write-message "missing required fields for Message ~a: ~a" message-name fields-str)))
 
-(define ((make-map-reader k-reader v-reader) tag in)
-  (define len (read-proto-len 'read-map tag in))
+(define ((make-limited-reader who proc [result-proc values]) tag in)
+  (define len (read-proto-len who tag in))
   (define limited-in (make-limited-input-port in len #f))
-  (let loop ([res (hash)])
+  (let loop ([res #f])
     (cond
-      [(eof-object? (peek-byte limited-in)) res]
+      [(eof-object? (peek-byte limited-in))
+       (result-proc res)]
       [else
-       (define-values (k-num k-tag)
-         (read-proto-tag limited-in))
-       (unless (eqv? k-num 1)
-         (error 'read-map "malformed map key"))
-       (define k (k-reader k-tag limited-in))
-       (define-values (v-num v-tag)
-         (read-proto-tag limited-in))
-       (unless (eqv? v-num 2)
-         (error 'read-map "malformed map value"))
-       (define v (v-reader v-tag limited-in))
-       (loop (hash-set res k v))])))
+       (loop (proc limited-in res))])))
+
+(define (make-map-reader k-reader v-reader)
+  (make-limited-reader
+   'read-map
+   (λ (in res)
+     (define-values (k-num k-tag)
+       (read-proto-tag in))
+     (unless (eqv? k-num 1)
+       (error 'read-map "malformed map key"))
+     (define k (k-reader k-tag in))
+     (define-values (v-num v-tag)
+       (read-proto-tag in))
+     (unless (eqv? v-num 2)
+       (error 'read-map "malformed map value"))
+     (define v (v-reader v-tag in))
+     (hash-set (or res (hash)) k v))))
 
 (define ((make-map-writer k-writer v-writer) num name value out)
   (unless (hash? value)
@@ -253,6 +273,16 @@
          (k-writer 1 "map key" k bs-out)
          (v-writer 2 "map value" v bs-out)))))
   (write-proto-bytes num name bs out))
+
+(define (get-packed-reader tok e t)
+  (define reader
+    (get-reader tok e t))
+  (make-limited-reader
+   'read-packed
+   (λ (in res)
+     (cons (reader #f in) (or res null)))
+   (λ (res)
+     (reverse res))))
 
 (define (get-reader tok e t)
   (case t
@@ -278,6 +308,28 @@
         (λ (tag in)
           (define len (read-proto-len 'read-message tag in))
           (reader (make-limited-input-port in len #f)))])]))
+
+(define (get-packed-writer tok e t)
+  (define writer
+    (get-writer tok e t))
+  (λ (num name value out)
+    (unless (list? value)
+      (error 'write-packed "expected a list~n  got: ~e~n  field: ~a" value name))
+    (define bs
+      (call-with-output-bytes
+       (lambda (bs-out)
+         (for ([v (in-list value)])
+           (writer #f name v bs-out)))))
+    (write-proto-bytes num name bs out)))
+
+(define (get-repeated-writer tok e t)
+  (define writer
+    (get-writer tok e t))
+  (λ (num name value out)
+    (unless (list? value)
+      (error 'write-repeated "expected a list~n  got: ~e~n  field: ~a" value name))
+    (for ([v (in-list value)])
+      (writer num name v out))))
 
 (define (get-writer tok e t)
   (case t
@@ -329,12 +381,22 @@
   (hash-set! (env-bindings e) id v))
 
 
+;; flags ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define optional-mask #b00000001)
+(define repeated-mask #b00000010)
+(define packed-mask   #b00000100)
+
+(define (repeated? f)
+  (flag-on? f repeated-mask))
+
+
 ;; help ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define (make-options option-nodes)
   (for/hash ([node (in-list option-nodes)])
     (match node
-      [(ast:Option _ path value)
+      [(Option _ path value)
        (values path value)])))
 
 (define (make-reserved?-proc reserved)
@@ -354,7 +416,7 @@
        (lambda (name number)
          (or (and (string=? name reserved-name) reserved-name)
              (rest-proc name number)))]
-      [(cons (ast:Range _ lo hi) reserved-rest)
+      [(cons (Range _ lo hi) reserved-rest)
        (define rest-proc
          (loop reserved-rest))
        (lambda (name number)
@@ -371,3 +433,6 @@
   (if (and line col)
       (format "~a~n  source: ~a~n  line: ~a~n  column: ~a" msg src line col)
       (format "~a~n  source: ~a~n  position: ~a" msg src pos)))
+
+(define (flag-on? n m)
+  (fx= (fxand n m) m))

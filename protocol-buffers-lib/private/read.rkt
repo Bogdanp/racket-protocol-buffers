@@ -37,14 +37,11 @@
   (values (fxrshift v 3) tag))
 
 (define (read-proto-len who tag in)
-  (unless (eq? tag 'len)
-    (error who "unexpected tag for ~a: ~a" who tag))
+  (check-tag 'read-proto-len "len" tag 'len)
   (read-uvarint in))
 
 (define (read-proto-bool tag in)
-  (unless (eq? tag 'varint)
-    (error 'read-proto-bool "unexpected tag for bool: ~a" tag))
-  (read-proto-int32 in))
+  (read-proto-int32 tag in))
 
 (define (read-proto-string tag in)
   (bytes->string/utf-8 (read-proto-bytes tag in)))
@@ -53,8 +50,7 @@
   (expect-bytes 'bytes (read-proto-len 'bytes tag in) in))
 
 (define (read-proto-int32 tag in)
-  (unless (eq? tag 'varint)
-    (error 'read-proto-int32 "unexpected tag for int32: ~a" tag))
+  (check-tag 'pread-proto-int32 "int32" tag 'varint)
   (define v
     (read-uvarint in))
   (if (> v #x7FFFFFFF)
@@ -62,8 +58,7 @@
       v))
 
 (define (read-proto-int64 tag in)
-  (unless (eq? tag 'varint)
-    (error 'read-proto-int64 "unexpected tag for int64: ~a" tag))
+  (check-tag 'read-proto-int64 "int64" tag 'varint)
   (define v
     (read-uvarint in))
   (if (> v #x7FFFFFFFFFFFFFFF)
@@ -71,56 +66,51 @@
       v))
 
 (define (read-proto-uint32 tag in)
-  (unless (eq? tag 'varint)
-    (error 'read-proto-uint32 "unexpected tag for uint32: ~a" tag))
+  (check-tag 'read-proto-uint32 "uint32" tag 'varint)
   (read-uvarint in))
 
 (define (read-proto-uint64 tag in)
-  (unless (eq? tag 'varint)
-    (error 'read-proto-uint64 "unexpected tag for uint64: ~a" tag))
+  (check-tag 'read-proto-uint64 "uint64" tag 'varint)
   (read-uvarint in))
 
 (define (read-proto-sint32 tag in)
-  (unless (eq? tag 'varint)
-    (error 'read-proto-sint32 "unexpected tag for sint32: ~a" tag))
+  (check-tag 'read-proto-sint32 "sint32" tag 'varint)
   (read-varint in))
 
 (define (read-proto-sint64 tag in)
-  (unless (eq? tag 'varint)
-    (error 'read-proto-sint64 "unexpected tag for sint64: ~a" tag))
+  (check-tag 'read-proto-sint64 "sint64" tag 'varint)
   (read-varint in))
 
 (define (read-proto-fixed32 tag in)
-  (unless (eq? tag 'i32)
-    (error 'read-proto-fixed32 "unexpected tag for fixed32: ~a" tag))
+  (check-tag 'read-proto-fixed32 "fixed32" tag 'i32)
   (integer-bytes->integer (expect-bytes 'fixed32 4 in) #f #f))
 
 (define (read-proto-fixed64 tag in)
-  (unless (eq? tag 'i64)
-    (error 'read-proto-fixed64 "unexpected tag for fixed64: ~a" tag))
+  (check-tag 'read-proto-fixed64 "fixed64" tag 'i64)
   (integer-bytes->integer (expect-bytes 'fixed64 8 in) #f #f))
 
 (define (read-proto-sfixed32 tag in)
-  (unless (eq? tag 'i32)
-    (error 'read-proto-sfixed32 "unexpected tag for sfixed32: ~a" tag))
+  (check-tag 'read-proto-sfixed32 "sfixed32" tag 'i32)
   (integer-bytes->integer (expect-bytes 'sfixed32 4 in) #t #f))
 
 (define (read-proto-sfixed64 tag in)
-  (unless (eq? tag 'i64)
-    (error 'read-proto-sfixed64 "unexpected tag for sfixed64: ~a" tag))
+  (check-tag 'read-proto-sfixed64 "sfixed64" tag 'i64)
   (integer-bytes->integer (expect-bytes 'sfixed64 8 in) #t #f))
 
 (define (read-proto-double tag in)
-  (unless (eq? tag 'i64)
-    (error 'read-proto-double "unexpected tag for double: ~a" tag))
+  (check-tag 'read-proto-float "double" tag 'i64)
   (floating-point-bytes->real (expect-bytes 'double 8 in) #f))
 
 (define (read-proto-float tag in)
-  (unless (eq? tag 'i32)
-    (error 'read-proto-float "unexpected tag for float: ~a" tag))
+  (check-tag 'read-proto-float "float" tag 'i32)
   (floating-point-bytes->real (expect-bytes 'float 4 in) #f))
 
 ;; help ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+
+(define (check-tag who what tag expected)
+  (when tag
+    (unless (eq? tag expected)
+      (error who "unexpected tag for ~a: ~a" what tag))))
 
 (define (expect-bytes what amt in)
   (define bs (read-bytes amt in))

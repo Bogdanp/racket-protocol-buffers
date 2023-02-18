@@ -16,7 +16,8 @@
 (define data
   (hasheq 'enum_field 'EAA_STARTED
           'my_map (hash 5 "hello")
-          'inner_message (list (hasheq 'ival -1024))))
+          'inner_message (list (hasheq 'ival -1024))
+          'n (list -1 2 42)))
 
 (call-with-output-file (build-path here "example.dat")
   #:exists 'replace
