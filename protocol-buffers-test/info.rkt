@@ -2,6 +2,6 @@
 
 (define collection "tests")
 (define deps '("base"
-               "protobuf-lib"
+               "protocol-buffers-lib"
                "rackunit-lib"))
-(define implies '("protobuf-lib"))
+(define implies '("protocol-buffers-lib"))

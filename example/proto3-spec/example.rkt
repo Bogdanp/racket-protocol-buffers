@@ -1,6 +1,6 @@
 #lang racket/base
 
-(require protobuf
+(require protocol-buffers
          racket/runtime-path)
 
 (define-runtime-path here ".")

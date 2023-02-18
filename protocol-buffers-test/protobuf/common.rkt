@@ -1,8 +1,8 @@
 #lang racket/base
 
-(require protobuf/private/ast
-         protobuf/private/lexer
-         protobuf/private/parser
+(require protocol-buffers/private/ast
+         protocol-buffers/private/lexer
+         protocol-buffers/private/parser
          racket/runtime-path)
 
 (provide
