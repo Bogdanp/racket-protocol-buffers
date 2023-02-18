@@ -7,6 +7,7 @@
          "lexer.rkt"
          "logger.rkt"
          "parser.rkt"
+         "read.rkt"
          "write.rkt")
 
 (provide
@@ -34,8 +35,8 @@
              (for ([e (in-list (mod-types m))])
                (define name
                  (match e
-                   [(enum name _options _fields) name]
-                   [(message name _options _fields) name]))
+                   [(enum name _options _reader _writer) name]
+                   [(message name _options _reader _writer) name]))
                (env-set! env name e))
              (if (eq? qualifier 'public)
                  (values package options (append types (reverse (mod-types m))))
@@ -74,7 +75,7 @@
 (provide
  (struct-out enum))
 
-(struct enum (name options writer))
+(struct enum (name options reader writer))
 
 (define (make-enum name field-nodes option-nodes reserved)
   (define reserved? (make-reserved?-proc reserved))
@@ -86,7 +87,17 @@
          (when (reserved? (symbol->string name) value)
            (oops tok "field ~a is reserved" name))
          (values name value)])))
-  (enum name options (make-enum-writer name fields)))
+  (define reader (make-enum-reader name fields))
+  (define writer (make-enum-writer name fields))
+  (enum name options reader writer))
+
+(define (make-enum-reader enum-name fields)
+  (define values-to-fields
+    (for/hasheqv ([(k v) (in-hash fields)])
+      (values v k)))
+  (lambda (tag in)
+    (define v (read-proto-int32 tag in))
+    (hash-ref values-to-fields v (λ () (error 'read-enum "invalid value for enum ~a: ~a" enum-name v)))))
 
 (define ((make-enum-writer enum-name fields) num name value out)
   (unless (hash-has-key? fields value)
@@ -100,8 +111,8 @@
  (struct-out message)
  (struct-out message-field))
 
-(struct message-field (label num options writer))
-(struct message (name options writer))
+(struct message-field (name num options reader writer))
+(struct message (name options reader writer))
 
 (define (make-message name children field-nodes option-nodes reserved _extensions env)
   (define reserved? (make-reserved?-proc reserved))
@@ -117,67 +128,120 @@
        (env-set! message-env name m)]
       [_
        (log-protobuf-warning "ignoring node ~e (child of message ~a)" node name)]))
-  (define fields
+  (define-values (fields required repeated)
     (let loop ([fields (hasheq)]
+               [required null]
+               [repeated null]
                [nodes field-nodes])
-      (for/fold ([fields fields])
+      (for/fold ([fields fields]
+                 [required required]
+                 [repeated repeated])
                 ([node (in-list nodes)])
         (match node
           [(ast:MessageField tok label type name number option-nodes)
            (when (reserved? (symbol->string name) number)
              (oops tok "field ~a is reserved" name))
            (define options (make-options option-nodes))
+           (define reader (get-reader tok message-env type))
            (define writer (get-writer tok message-env type))
-           (define f (message-field label number options writer))
-           (hash-set fields name f)]
+           (define f (message-field name number options reader writer))
+           (values (hash-set fields name f)
+                   (if (eq? label 'optional) required (cons name required))
+                   (if (eq? label 'repeated) (cons name repeated) repeated))]
           [(ast:MessageOneOfField _ _ field-nodes)
-           ;; FIXME: enforce disjunction?
            (loop fields field-nodes)]
           [(ast:MessageMapField tok key-type val-type name number option-nodes)
            (when (reserved? (symbol->string name) number)
              (oops tok "field ~a is reserved" name))
            (define options (make-options option-nodes))
+           (define k-reader (get-reader tok message-env key-type))
            (define k-writer (get-writer tok message-env key-type))
+           (define v-reader (get-reader tok message-env val-type))
            (define v-writer (get-writer tok message-env val-type))
+           (define reader (make-map-reader k-reader v-reader))
            (define writer (make-map-writer k-writer v-writer))
-           (define f (message-field #f number options writer))
-           (hash-set fields name f)]
+           (define f (message-field name number options reader writer))
+           (values (hash-set fields name f) required repeated)]
           [_
-           (log-protobuf-warning "ignoring field node ~e" node)]))))
-  (message name options (make-message-writer name fields)))
+           (log-protobuf-warning "ignoring field node ~e" node)
+           (values fields required repeated)]))))
+  (define reader (make-message-reader name fields required repeated))
+  (define writer (make-message-writer name fields required repeated))
+  (message name options reader writer))
 
-(define (make-message-writer message-name fields)
-  (define-values (required-fields repeated-fields)
-    (for/fold ([required-fields null]
-               [repeated-fields null])
-              ([(name f) (in-hash fields)])
-      (match-define (message-field label _num _options _writer) f)
-      (values
-       (if (eq? label 'optional) required-fields (cons name required-fields))
-       (if (eq? label 'repeated) (cons name repeated-fields) repeated-fields))))
-  (lambda (name value out)
-    (unless (hash? value)
-      (if name
-          (error 'write-message "expected a hash~n  got: ~e~n  field: ~a" value name)
-          (error 'write-message "expected a hash for Message ~a~n  got: ~e" message-name value)))
-    (define missing-required-fields
-      (for/fold ([missing-required-fields required-fields])
-                ([(k v) (in-hash value)])
-        (match-define (message-field _label num _options writer)
-          (hash-ref fields k (λ () (error 'write-message "unknown field ~a for Message ~a" k message-name))))
+(define (make-message-reader message-name fields required repeated)
+  (define numbers-to-fields
+    (for/hasheqv ([f (in-hash-values fields)])
+      (values (message-field-num f) f)))
+  (lambda (in)
+    (define-values (missing res)
+      (let loop ([missing required]
+                 [res (hasheq)])
         (cond
-          [(pair? v)
-           ;; TODO: Support for packed fields.
-           (unless (memv k repeated-fields)
-             (error 'write-message "received list but field ~a for Message ~a is not repeated" k message-name))
-           (for ([v (in-list v)])
-             (writer num name v out))]
+          [(eof-object? (peek-byte in))
+           (values missing (for/hasheq ([(k v) (in-hash res)])
+                             (if (list? v)
+                                 (values k (reverse v))
+                                 (values k v))))]
           [else
-           (writer num name v out)])
-        (remq k missing-required-fields)))
-    (unless (null? missing-required-fields)
-      (define fields-str (string-join (map symbol->string missing-required-fields) ", "))
-      (error 'write-message "missing required fields for Message ~a: ~a" message-name fields-str))))
+           (define-values (num tag)
+             (read-proto-tag in))
+           (match-define (message-field name _number _options reader _writer)
+             (hash-ref numbers-to-fields num (λ () (error 'read-message "no field with number ~a in Message ~a" num message-name))))
+           (define v
+             (reader tag in))
+           (loop
+            (remq name missing)
+            (if (memq name repeated)
+                (hash-update res name (λ (vs) (cons v vs)) null)
+                (hash-set res name v)))])))
+    (begin0 res
+      (unless (null? missing)
+        (define fields-str (string-join (map symbol->string missing) ", "))
+        (error 'read-message "missing required fields for Message ~a: ~a" message-name fields-str)))))
+
+(define ((make-message-writer message-name fields required repeated) name value out)
+  (unless (hash? value)
+    (if name
+        (error 'write-message "expected a hash~n  got: ~e~n  field: ~a" value name)
+        (error 'write-message "expected a hash for Message ~a~n  got: ~e" message-name value)))
+  (define missing
+    (for/fold ([missing required])
+              ([(k v) (in-hash value)])
+      (match-define (message-field _name num _options _reader writer)
+        (hash-ref fields k (λ () (error 'write-message "unknown field ~a for Message ~a" k message-name))))
+      (cond
+        [(pair? v)
+         ;; TODO: Support for packed fields.
+         (unless (memv k repeated)
+           (error 'write-message "received list but field ~a for Message ~a is not repeated" k message-name))
+         (for ([v (in-list v)])
+           (writer num name v out))]
+        [else
+         (writer num name v out)])
+      (remq k missing)))
+  (unless (null? missing)
+    (define fields-str (string-join (map symbol->string missing) ", "))
+    (error 'write-message "missing required fields for Message ~a: ~a" message-name fields-str)))
+
+(define ((make-map-reader k-reader v-reader) tag in)
+  (define len (read-proto-len 'read-map tag in))
+  (define limited-in (make-limited-input-port in len #f))
+  (let loop ([res (hash)])
+    (cond
+      [(eof-object? (peek-byte limited-in)) res]
+      [else
+       (define-values (k-num k-tag)
+         (read-proto-tag limited-in))
+       (unless (eqv? k-num 1)
+         (error 'read-map "malformed map key"))
+       (define k (k-reader k-tag limited-in))
+       (define-values (v-num v-tag)
+         (read-proto-tag limited-in))
+       (unless (eqv? v-num 2)
+         (error 'read-map "malformed map value"))
+       (define v (v-reader v-tag limited-in))
+       (loop (hash-set res k v))])))
 
 (define ((make-map-writer k-writer v-writer) num name value out)
   (unless (hash? value)
@@ -189,6 +253,31 @@
          (k-writer 1 "map key" k bs-out)
          (v-writer 2 "map value" v bs-out)))))
   (write-proto-bytes num name bs out))
+
+(define (get-reader tok e t)
+  (case t
+    [(bool) read-proto-bool]
+    [(bytes) read-proto-bytes]
+    [(double) read-proto-double]
+    [(fixed32) read-proto-fixed32]
+    [(fixed64) read-proto-fixed64]
+    [(float) read-proto-float]
+    [(int32) read-proto-int32]
+    [(int64) read-proto-int64]
+    [(sfixed32) read-proto-sfixed32]
+    [(sfixed64) read-proto-sfixed64]
+    [(sint32) read-proto-sint32]
+    [(sint64) read-proto-sint64]
+    [(string) read-proto-string]
+    [(uint32) read-proto-uint32]
+    [(uint64) read-proto-uint64]
+    [else
+     (match (env-ref e t (λ () (oops tok "undefined type ~a" t)))
+       [(enum _name _options reader _writer) reader]
+       [(message _name _options reader _writer)
+        (λ (tag in)
+          (define len (read-proto-len 'read-message tag in))
+          (reader (make-limited-input-port in len #f)))])]))
 
 (define (get-writer tok e t)
   (case t
@@ -209,8 +298,8 @@
     [(uint64) write-proto-uint64]
     [else
      (match (env-ref e t (λ () (oops tok "undefined type ~a" t)))
-       [(enum _name _options writer) writer]
-       [(message _name _options writer)
+       [(enum _name _options _reader writer) writer]
+       [(message _name _options _reader writer)
         (λ (num name value out)
           (define bs
             (call-with-output-bytes

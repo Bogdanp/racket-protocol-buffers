@@ -13,8 +13,7 @@
   (write-uvarint (fxior (fxlshift num 3) tag) out))
 
 (define (write-proto-bool num _name value out)
-  (write-proto-tag num 0 out)
-  (write-uvarint (if value 1 0) out))
+  (write-proto-int32 num (if value 1 0) out))
 
 (define (write-proto-string num name value out)
   (unless (string? value)

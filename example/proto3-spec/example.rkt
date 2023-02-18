@@ -21,3 +21,7 @@
               'my_map (hasheq 5 "hello")
               'inner_message (hasheq 'ival -1024)))
     (write-message Outer data out)))
+
+(call-with-input-file (build-path here "example.dat")
+  (lambda (in)
+    (read-message Outer in)))

@@ -18,6 +18,7 @@
   [message? (-> any/c boolean?)]
   [message-name (-> message? symbol?)]
   [message-options (-> message? hash?)]
+  [read-message (->* (message?) (input-port?) hash?)]
   [write-message (->* (message? hash?) (output-port?) void?)]))
 
 (define (read-protobuf-mod orig-in)
@@ -27,6 +28,9 @@
 
 (define (mod-messages m)
   (filter message? (mod-types m)))
+
+(define (read-message m [in (current-input-port)])
+  ((message-reader m) in))
 
 (define (write-message m v [out (current-output-port)])
   ((message-writer m) #f v out))
