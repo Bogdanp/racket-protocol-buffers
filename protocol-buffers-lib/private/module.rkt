@@ -48,6 +48,8 @@
          (oops tok "package already declared")]
         [(Package _ name)
          (values name options types)]
+        [(Option _ (list name) value)
+         (values package (hash-set options name value) types)]
         [(Option _ path value)
          (values package (hash-set options path value) types)]
         [(Enum _ name fields options reserved)
@@ -67,8 +69,8 @@
         [(Service _ name _rpcs _streams _options)
          (log-protobuf-warning "skipping Service definition ~a" name)
          (values package options types)]
-        [_
-         (error 'make-mod "unexpected node: ~e" node)])))
+        [(Node tok)
+         (oops tok "unexpected node")])))
   (mod package options types))
 
 
@@ -164,6 +166,8 @@
            (define f (message-field name number flags reader writer))
            (values (hash-set fields name f)
                    (if optional? required (cons name required)))]
+          [(MessageGroupField tok _label _name _number _children _fields _options _reserved _extensions)
+           (oops tok "group fields are not supported")]
           [(MessageOneOfField _ _ field-nodes)
            (loop fields field-nodes)]
           [(MessageMapField tok key-type val-type name number _option-nodes)
@@ -189,13 +193,13 @@
     (for/hasheqv ([f (in-hash-values fields)])
       (values (message-field-num f) f)))
   (lambda (in)
-    (define-values (missing res)
+    (define-values (missing message)
       (let loop ([missing required]
-                 [res (hasheq)])
+                 [message (hasheq)])
         (cond
           [(eof-object? (peek-byte in))
-           (values missing (for/hasheq ([(k v) (in-hash res)])
-                             (if (list? v)
+           (values missing (for/hasheq ([(k v) (in-hash message)])
+                             (if (pair? v)
                                  (values k (reverse v))
                                  (values k v))))]
           [else
@@ -209,14 +213,15 @@
             (remq name missing)
             (if (repeated? flags)
                 (hash-update
-                 res name
-                 (λ (vs)
-                   (if (pair? v)
-                       (append (reverse v) vs)
-                       (cons v vs)))
+                 message name
+                 (lambda (vs)
+                   (cond
+                     [(null? v) vs]
+                     [(pair? v) (append (reverse v) vs)]
+                     [else (cons v vs)]))
                  null)
-                (hash-set res name v)))])))
-    (begin0 res
+                (hash-set message name v)))])))
+    (begin0 message
       (unless (null? missing)
         (define fields-str (string-join (map symbol->string missing) ", "))
         (error 'read-message "missing required fields for message ~a: ~a" mname fields-str)))))
@@ -250,7 +255,7 @@
 (define (make-map-reader k-reader v-reader)
   (make-limited-reader
    'read-map
-   (λ (in res)
+   (lambda (in res)
      (define-values (k-num k-tag)
        (read-proto-tag in))
      (unless (eqv? k-num 1)
@@ -261,7 +266,9 @@
      (unless (eqv? v-num 2)
        (error 'read-map "malformed map value"))
      (define v (v-reader v-tag in))
-     (hash-set (or res (hash)) k v))))
+     (hash-set (or res (hash)) k v))
+   (lambda (res)
+     (or res (hash)))))
 
 (define ((make-map-writer k-writer v-writer) num name value out)
   (unless (hash? value)
@@ -281,10 +288,10 @@
     (get-reader tok e t))
   (make-limited-reader
    'read-packed
-   (λ (in res)
+   (lambda (in res)
      (cons (reader #f in) (or res null)))
-   (λ (res)
-     (reverse res))))
+   (lambda (res)
+     (reverse (or res null)))))
 
 (define (get-reader tok e t)
   (case t
@@ -307,15 +314,16 @@
      (match (env-ref e t (λ () (oops tok "undefined type ~a" t)))
        [(enum _name _options reader _writer) reader]
        [(message _name _options reader _writer)
-        (λ (tag in)
+        (lambda (tag in)
           (define len (read-proto-len 'read-message tag in))
           (reader (make-limited-input-port in len #f)))])]))
 
 (define (get-packed-writer tok e t)
   (define writer
     (get-writer tok e t))
-  (λ (num name value out)
-    (unless (list? value)
+  (lambda (num name value out)
+    (unless (or (null? value)
+                (pair? value))
       (error 'write-packed "expected a list~n  got: ~e~n  field: ~a" value name))
     (define bs
       (call-with-output-bytes
@@ -327,8 +335,9 @@
 (define (get-repeated-writer tok e t)
   (define writer
     (get-writer tok e t))
-  (λ (num name value out)
-    (unless (list? value)
+  (lambda (num name value out)
+    (unless (or (null? value)
+                (pair? value))
       (error 'write-repeated "expected a list~n  got: ~e~n  field: ~a" value name))
     (for ([v (in-list value)])
       (writer num name v out))))
@@ -354,7 +363,7 @@
      (match (env-ref e t (λ () (oops tok "undefined type ~a" t)))
        [(enum _name _options _reader writer) writer]
        [(message _name _options _reader writer)
-        (λ (num name value out)
+        (lambda (num name value out)
           (define bs
             (call-with-output-bytes
              (lambda (bs-out)
@@ -433,10 +442,12 @@
 (define (oops tok fmt . args)
   (match-define (token _ _ _ line col pos) tok)
   (define src (current-source-name))
-  (define msg (apply format fmt args))
-  (if (and line col)
-      (format "~a~n  source: ~a~n  line: ~a~n  column: ~a" msg src line col)
-      (format "~a~n  source: ~a~n  position: ~a" msg src pos)))
+  (define err (apply format fmt args))
+  (define msg
+    (if (and line col)
+        (format "~a~n  source: ~a~n  line: ~a~n  column: ~a" err src line col)
+        (format "~a~n  source: ~a~n  position: ~a" err src pos)))
+  (error 'read-protobuf msg))
 
 (define (flag-on? n m)
   (fx= (fxand n m) m))
