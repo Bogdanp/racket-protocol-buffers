@@ -1,6 +1,6 @@
 # racket-protocol-buffers
 
-A WIP Protocol Buffers implementation for Racket.
+A Protocol Buffers implementation for Racket.
 
 ## License
 

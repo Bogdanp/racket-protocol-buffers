@@ -4,19 +4,11 @@
          (prefix-in private: protocol-buffers/private/module)
          (prefix-in private: protocol-buffers/private/write)
          racket/port
-         rackunit)
+         rackunit
+         "common.rkt")
 
 (define (read-protobuf-str s)
   (call-with-input-string s read-protobuf))
-
-(define (roundtrip m v)
-  (define bs
-    (call-with-output-bytes
-     (lambda (out)
-       (write-message m v out))))
-  (call-with-input-bytes bs
-    (lambda (in)
-      (read-message m in))))
 
 (define module-suite
   (test-suite

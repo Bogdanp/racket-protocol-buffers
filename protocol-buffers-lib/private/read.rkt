@@ -37,11 +37,11 @@
   (values (fxrshift v 3) tag))
 
 (define (read-proto-len who tag in)
-  (check-tag 'read-proto-len "len" tag 'len)
+  (check-tag who "len" tag 'len)
   (read-uvarint in))
 
 (define (read-proto-bool tag in)
-  (read-proto-int32 tag in))
+  (= (read-proto-int32 tag in) 1))
 
 (define (read-proto-string tag in)
   (bytes->string/utf-8 (read-proto-bytes tag in)))
@@ -53,8 +53,8 @@
   (check-tag 'pread-proto-int32 "int32" tag 'varint)
   (define v
     (read-uvarint in))
-  (if (> v #x7FFFFFFF)
-      (- v #xFFFFFFFF 1)
+  (if (> v #x7FFFFFFFFFFFFFFF)
+      (- v #xFFFFFFFFFFFFFFFF 1)
       v))
 
 (define (read-proto-int64 tag in)

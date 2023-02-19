@@ -13,8 +13,8 @@
   (when num
     (write-uvarint (fxior (fxlshift num 3) tag) out)))
 
-(define (write-proto-bool num _name value out)
-  (write-proto-int32 num (if value 1 0) out))
+(define (write-proto-bool num name value out)
+  (write-proto-int32 num name (if value 1 0) out))
 
 (define (write-proto-string num name value out)
   (unless (string? value)
@@ -39,7 +39,7 @@
 
 (define-int-writer (write-proto-int32 value out)
   #:range [#x-80000000 #x7FFFFFFF]
-  (write-uvarint (if (< value 0) (+ #xFFFFFFFF value 1) value) out))
+  (write-uvarint (if (< value 0) (+ #xFFFFFFFFFFFFFFFF value 1) value) out))
 
 (define-int-writer (write-proto-int64 value out)
   #:range [#x-8000000000000000 #x7FFFFFFFFFFFFFFF]
@@ -73,7 +73,7 @@
 (define-fixed-writer write-proto-fixed32 #:signed? #f #:tag 5 #:size 4)
 (define-fixed-writer write-proto-fixed64 #:signed? #f #:tag 1 #:size 8)
 
-(define-fixed-writer write-proto-sfixed32 #:signed? #f #:tag 5 #:size 4)
+(define-fixed-writer write-proto-sfixed32 #:signed? #t #:tag 5 #:size 4)
 (define-fixed-writer write-proto-sfixed64 #:signed? #t #:tag 1 #:size 8)
 
 (define-syntax-rule (define-real-writer id #:tag tag-expr #:size size-expr)
