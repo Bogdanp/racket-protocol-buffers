@@ -13,7 +13,7 @@ jobs:
         architecture: 'x64'
         distribution: 'full'
         variant: 'CS'
-        version: '8.8'
+        version: 'current'
     - run: raco pkg install --auto --batch protocol-buffers-lib/ protocol-buffers-test/
     - run: pip install -U protobuf
     - run: raco test protocol-buffers-test/
