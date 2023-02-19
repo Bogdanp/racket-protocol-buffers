@@ -1,6 +1,7 @@
 #lang racket/base
 
 (require protocol-buffers
+         racket/pretty
          racket/runtime-path)
 
 (define-runtime-path here ".")
@@ -8,23 +9,31 @@
 (define mod
   (parameterize ([current-directory here])
     (call-with-input-file (build-path here "spec.proto")
-      read-protobuf-mod)))
+      read-protobuf)))
 
-(define Outer
-  (car (mod-messages mod)))
-
-(define data
-  (hasheq 'enum_field 'EAA_STARTED
-          'my_map (hash 5 "hello")
-          'inner_message (list (hasheq 'ival -1024))
-          'n (list -1 2 42)))
+(define People (mod-ref mod 'People))
+(define people
+  (hasheq
+   'people (list
+            (hasheq
+             'id 1
+             'name "Bogdan"
+             'age 30
+             'sex 'MALE
+             'relationships (hash 2 'SIBLING))
+            (hasheq
+             'id 2
+             'name "Paula"
+             'age 23
+             'sex 'FEMALE
+             'relationships (hash 1 'SIBLING)))))
 
 (call-with-output-file (build-path here "example.dat")
   #:exists 'replace
   (lambda (out)
-    (write-message Outer data out)))
+    (write-message People people out)))
 
-(equal? data
-        (call-with-input-file (build-path here "example.dat")
-          (lambda (in)
-            (read-message Outer in))))
+(pretty-print
+ (call-with-input-file (build-path here "example.dat")
+   (lambda (in)
+     (read-message People in))))
