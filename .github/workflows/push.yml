@@ -16,4 +16,5 @@ jobs:
         version: 'current'
     - run: raco pkg install --auto --batch protocol-buffers-lib/ protocol-buffers-test/
     - run: pip install -U protobuf
+    - run: sudo apt update && sudo apt install -y protobuf-compiler
     - run: raco test protocol-buffers-test/
