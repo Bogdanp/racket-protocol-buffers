@@ -1,6 +1,0 @@
-syntax = "proto3";
-
-enum Sex {
-  MALE = 0;
-  FEMALE = 1;
-}
