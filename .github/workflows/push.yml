@@ -1,0 +1,19 @@
+on: push
+name: CI
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    - uses: actions/setup-python@v4
+      with:
+        python-version: '3.10'
+    - uses: Bogdanp/setup-racket@v1.9.1
+      with:
+        architecture: 'x64'
+        distribution: 'full'
+        variant: 'CS'
+        version: '8.8'
+    - run: raco pkg install --auto --batch protocol-buffers-lib/ protocol-buffers-test/
+    - run: pip install -U protobuf
+    - run: raco test protocol-buffers-test/
