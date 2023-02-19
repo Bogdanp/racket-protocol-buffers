@@ -310,13 +310,20 @@
     [(string) read-proto-string]
     [(uint32) read-proto-uint32]
     [(uint64) read-proto-uint64]
-    [else
-     (match (env-ref e t (λ () (oops tok "undefined type ~a" t)))
-       [(enum _name _options reader _writer) reader]
-       [(message _name _options reader _writer)
-        (lambda (tag in)
-          (define len (read-proto-len 'read-message tag in))
-          (reader (make-limited-input-port in len #f)))])]))
+    [else (->reader (env-ref e t (λ ()
+                                   (lambda (tag in)
+                                     (define (fail)
+                                       (oops tok "undefined type ~a" t))
+                                     ((->reader (env-ref e t fail)) tag in)))))]))
+
+(define (->reader t)
+  (match t
+    [(? procedure?) t]
+    [(enum _name _options reader _writer) reader]
+    [(message _name _options reader _writer)
+     (lambda (tag in)
+       (define len (read-proto-len 'read-message tag in))
+       (reader (make-limited-input-port in len #f)))]))
 
 (define (get-packed-writer tok e t)
   (define writer
@@ -359,16 +366,23 @@
     [(string) write-proto-string]
     [(uint32) write-proto-uint32]
     [(uint64) write-proto-uint64]
-    [else
-     (match (env-ref e t (λ () (oops tok "undefined type ~a" t)))
-       [(enum _name _options _reader writer) writer]
-       [(message _name _options _reader writer)
-        (lambda (num name value out)
-          (define bs
-            (call-with-output-bytes
-             (lambda (bs-out)
-               (writer name value bs-out))))
-          (write-proto-bytes num name bs out))])]))
+    [else (->writer (env-ref e t (λ ()
+                                   (lambda (num name value out)
+                                     (define (fail)
+                                       (oops tok "undefined type ~a" t))
+                                     ((->writer (env-ref e t fail)) num name value out)))))]))
+
+(define (->writer t)
+  (match t
+    [(? procedure?) t]
+    [(enum _name _options _reader writer) writer]
+    [(message _name _options _reader writer)
+     (lambda (num name value out)
+       (define bs
+         (call-with-output-bytes
+          (lambda (bs-out)
+            (writer name value bs-out))))
+       (write-proto-bytes num name bs out))]))
 
 
 ;; env ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -386,7 +400,7 @@
     [(not parent)
      (default-proc)]
     [else
-     (env-ref parent id)]))
+     (env-ref parent id default-proc)]))
 
 (define (env-set! e id v)
   (hash-set! (env-bindings e) id v))

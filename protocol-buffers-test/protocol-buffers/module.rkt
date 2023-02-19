@@ -144,7 +144,23 @@ MOD
        (check-equal?
         (read-message Example (open-input-bytes bs))
         (hasheq
-         'x '(1 2 3 4 5 6 7)))))))
+         'x '(1 2 3 4 5 6 7)))))
+
+   (test-case "order independence"
+     (define m (read-protobuf-str #<<MOD
+syntax = 'proto2';
+
+message A {
+  required B b = 1;
+}
+
+message B {
+  required string s = 1;
+}
+MOD
+                                  ))
+     (define d (hasheq 'b (hasheq 's "hello")))
+     (check-equal? (roundtrip (mod-ref m 'A) d) d))))
 
 (module+ test
   (require rackunit/text-ui)
