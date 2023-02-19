@@ -37,7 +37,7 @@
 (define gen:int64
   (gen:choice
    gen:int
-   (gen:map gen:int (λ (x) (* x 2)))))
+   (gen:map gen:int (λ (x) (if (eq? missing x) missing (* x 2))))))
 
 (define gen:uint
   (gen:map
@@ -50,7 +50,7 @@
 (define gen:uint64
   (gen:choice
    gen:uint
-   (gen:map gen:uint (λ (x) (* x 2)))))
+   (gen:map gen:uint (λ (x) (if (eq? missing x) missing (* x 2))))))
 
 (define gen:primitive-type
   (gen:choice
