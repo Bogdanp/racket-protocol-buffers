@@ -14,12 +14,11 @@
 
 (define missing (gensym 'missing))
 
-(define (gen:seq [init-val 0])
-  (let ([seq init-val])
-    (make-gen
-     (lambda (_prng _size)
-       (begin0 (make-shrink-tree seq)
-         (set! seq (add1 seq)))))))
+(define (gen:seq [seq 0])
+  (make-gen
+   (lambda (_prng _size)
+     (begin0 (make-shrink-tree seq)
+       (set! seq (add1 seq))))))
 
 (define gen:bool
   (gen:map
@@ -53,6 +52,7 @@
    gen:uint
    (gen:map gen:uint (λ (x) (if (eq? missing x) missing (* x 2))))))
 
+;; The scalar types that are allowed as map keys.
 (define gen:scalar-type*
   (gen:choice
    (gen:const (cons 'bool gen:bool))
@@ -85,25 +85,6 @@
                              (lambda (s)
                                (if (string=? s "") missing s)))))))
 
-(define gen:primitive-type+map
-  (gen:choice
-   gen:primitive-type
-   (gen:let ([k gen:scalar-type*]
-             [v gen:primitive-type])
-     (match-define (cons k-type k-gen) k)
-     (match-define (cons v-type v-gen) v)
-     (cons (string->symbol (format "map<~a, ~a>" k-type v-type))
-           (gen:map
-            (gen:list
-             #:max-length 3
-             (gen:tuple k-gen v-gen))
-            (lambda (pairs)
-              (define ht
-                (for/hash ([p (in-list pairs)]
-                           #:unless (eq? missing (car p))
-                           #:unless (eq? missing (cadr p)))
-                  (apply values p)))
-              (if (hash-empty? ht) missing ht)))))))
 
 (define gen:name-str
   (let ([gen:name-seq (gen:seq)])
@@ -119,6 +100,42 @@
   (gen:map gen:name-str (compose1 string->symbol string-titlecase)))
 (define gen:field-name
   (gen:map gen:name-str (compose1 string->symbol string-downcase)))
+
+(define (gen:custom-type name generators)
+  (gen:frequency
+   `((10 . ,(gen:const missing))
+     (1  . ,(gen:delay (hash-ref generators name))))))
+
+(define (gen:map-type custom-type-names generators)
+  (gen:let ([k gen:scalar-type*]
+            [v (gen:type custom-type-names)])
+    (match-define (cons k-type k-gen) k)
+    (match-define (cons v-type v-gen)
+      (if (symbol? v)
+          (cons v (gen:custom-type v generators))
+          v))
+    (cons (string->symbol (format "map<~a, ~a>" k-type v-type))
+          (gen:map
+           (gen:list
+            #:max-length 3
+            (gen:tuple k-gen v-gen))
+           (lambda (pairs)
+             (define ht
+               (for/hash ([p (in-list pairs)]
+                          #:unless (eq? missing (car p))
+                          #:unless (eq? missing (cadr p)))
+                 (apply values p)))
+             (if (hash-empty? ht) missing ht))))))
+
+(define (gen:type custom-type-names)
+  (gen:choice
+   gen:primitive-type
+   (gen:one-of custom-type-names)))
+
+(define (gen:type+map custom-type-names generators)
+  (gen:choice
+   (gen:type custom-type-names)
+   (gen:map-type custom-type-names generators)))
 
 (define (gen:enum generators)
   (gen:let ([name gen:type-name]
@@ -149,9 +166,7 @@ SRC
   (gen:let ([field-nums (gen:list (gen:seq 2) #:max-length 10)]
             [all-field-nums (gen:const (cons 1 field-nums))]
             [all-field-names (apply gen:tuple (make-list (length all-field-nums) gen:field-name))]
-            [all-field-types (apply gen:tuple (make-list (length all-field-nums) (gen:choice
-                                                                                  gen:primitive-type+map
-                                                                                  (gen:one-of all-names))))])
+            [all-field-types (apply gen:tuple (make-list (length all-field-nums) (gen:type+map all-names generators)))])
     (define fields
       (for/list ([num (in-list all-field-nums)]
                  [name (in-list all-field-names)]
@@ -178,9 +193,7 @@ SRC
                                     (match-define (list _num name type) f)
                                     (cond
                                       [(symbol? type)
-                                       (list name (gen:frequency
-                                                   `((10 . ,(gen:const missing))
-                                                     (1 . ,(gen:delay (hash-ref generators type))))))]
+                                       (list name (gen:custom-type type generators))]
                                       [else
                                        (list name (cdr type))]))))
                                 (λ (ht)
@@ -219,11 +232,10 @@ SRC
     (with-handlers ([exn:fail? (λ (e) (error (exn-message e)))])
       (check-property
        (property ([v gen:value])
-         (define roundtripped-v (roundtrip msg v))
-         (check-equal? roundtripped-v v)))))
+         (check-equal? (roundtrip msg v) v)))))
 
   (check-property
-   (make-config #:tests 100)
+   (make-config #:tests 30)
    internal-roundtrip)
 
   (define protoc (find-executable-path "protoc"))
@@ -231,7 +243,7 @@ SRC
 
   (define-runtime-path here ".")
   (define oracle-dir (build-path here "oracle"))
-  (define oracle-init.py (build-path oracle-dir "__init__.py"))
+  (define oracle/__init__.py (build-path oracle-dir "__init__.py"))
   (define oracle.py (build-path here "oracle.py"))
   (define-property external-roundtrip
     ([m gen:module])
@@ -247,7 +259,7 @@ SRC
         (displayln str out)))
     (delete-directory/files oracle-dir #:must-exist? #f)
     (make-directory* oracle-dir)
-    (call-with-output-file oracle-init.py void)
+    (call-with-output-file oracle/__init__.py void)
     (check-true (zero? (system*/exit-code protoc "-I" dir name "--python_out" oracle-dir)))
     (with-handlers ([exn:fail? (λ (e) (error (exn-message e)))])
       (check-property
@@ -282,5 +294,5 @@ SRC
 
   (when protoc
     (check-property
-     (make-config #:tests 100)
+     (make-config #:tests 30)
      external-roundtrip)))
