@@ -30,8 +30,6 @@
       [(0) 'varint]
       [(1) 'i64]
       [(2) 'len]
-      [(3) 'sgroup]
-      [(4) 'egroup]
       [(5) 'i32]
       [else (error 'read-proto-tag "unexpected tag: ~a" t)]))
   (values (fxrshift v 3) tag))
