@@ -34,6 +34,11 @@
    (lambda (n)
      (if (zero? n) missing n))))
 
+(define gen:int64
+  (gen:choice
+   gen:int
+   (gen:map gen:int (λ (x) (* x 2)))))
+
 (define gen:uint
   (gen:map
    (gen:choice
@@ -41,6 +46,11 @@
     (gen:integer-in #x80000000 #xFFFFFFFF))
    (lambda (n)
      (if (zero? n) missing n))))
+
+(define gen:uint64
+  (gen:choice
+   gen:uint
+   (gen:map gen:uint (λ (x) (* x 2)))))
 
 (define gen:primitive-type
   (gen:choice
@@ -54,26 +64,27 @@
                              (lambda (s)
                                (if (string=? s "") missing s)))))
    (gen:const (cons 'int32 gen:int))
-   (gen:const (cons 'int64 gen:int))
+   (gen:const (cons 'int64 gen:int64))
    (gen:const (cons 'uint32 gen:uint))
-   (gen:const (cons 'uint64 gen:uint))
+   (gen:const (cons 'uint64 gen:uint64))
    (gen:const (cons 'sint32 gen:int))
-   (gen:const (cons 'sint64 gen:int))
+   (gen:const (cons 'sint64 gen:int64))
    (gen:const (cons 'fixed32 gen:uint))
-   (gen:const (cons 'fixed64 gen:uint))
+   (gen:const (cons 'fixed64 gen:uint64))
    (gen:const (cons 'sfixed32 gen:int))
-   (gen:const (cons 'sfixed64 gen:int))
+   (gen:const (cons 'sfixed64 gen:int64))
    (gen:const (cons 'double gen:real))
    (gen:const (cons 'float (gen:const 3.140000104904175)))))
 
 (define gen:name-str
   (let ([gen:name-seq (gen:seq)])
-    (gen:let ([start gen:char-letter]
-              [rest (gen:list gen:char-alphanumeric #:max-length 10)]
-              [seq gen:name-seq])
-      (string-append
-       (apply string start rest)
-       (number->string seq)))))
+    (gen:no-shrink
+     (gen:let ([start gen:char-letter]
+               [rest (gen:list gen:char-alphanumeric #:max-length 10)]
+               [seq gen:name-seq])
+       (string-append
+        (apply string start rest)
+        (number->string seq))))))
 
 (define gen:type-name
   (gen:map gen:name-str (compose1 string->symbol string-titlecase)))
@@ -226,7 +237,6 @@ SRC
          (define error-str
            (port->string python-err))
          (unless (zero? (control 'exit-code))
-           (displayln error-str)
            (error 'python error-str))
          (close-input-port python-in)
          (close-input-port python-err)
