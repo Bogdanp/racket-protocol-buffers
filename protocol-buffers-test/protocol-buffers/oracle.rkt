@@ -4,6 +4,7 @@
          rackcheck
          rackcheck/shrink-tree
          racket/file
+         racket/format
          racket/list
          racket/match
          racket/port
@@ -52,17 +53,9 @@
    gen:uint
    (gen:map gen:uint (λ (x) (if (eq? missing x) missing (* x 2))))))
 
-(define gen:primitive-type
+(define gen:scalar-type*
   (gen:choice
    (gen:const (cons 'bool gen:bool))
-   (gen:const (cons 'bytes (gen:map
-                            (gen:bytes)
-                            (lambda (bs)
-                              (if (bytes=? #"") missing bs)))))
-   (gen:const (cons 'string (gen:map
-                             (gen:string)
-                             (lambda (s)
-                               (if (string=? s "") missing s)))))
    (gen:const (cons 'int32 gen:int))
    (gen:const (cons 'int64 gen:int64))
    (gen:const (cons 'uint32 gen:uint))
@@ -72,9 +65,45 @@
    (gen:const (cons 'fixed32 gen:uint))
    (gen:const (cons 'fixed64 gen:uint64))
    (gen:const (cons 'sfixed32 gen:int))
-   (gen:const (cons 'sfixed64 gen:int64))
+   (gen:const (cons 'sfixed64 gen:int64))))
+
+(define gen:scalar-type
+  (gen:choice
+   gen:scalar-type*
    (gen:const (cons 'double gen:real))
    (gen:const (cons 'float (gen:const 3.140000104904175)))))
+
+(define gen:primitive-type
+  (gen:choice
+   gen:scalar-type
+   (gen:const (cons 'bytes (gen:map
+                            (gen:bytes)
+                            (lambda (bs)
+                              (if (bytes=? #"") missing bs)))))
+   (gen:const (cons 'string (gen:map
+                             (gen:string)
+                             (lambda (s)
+                               (if (string=? s "") missing s)))))))
+
+(define gen:primitive-type+map
+  (gen:choice
+   gen:primitive-type
+   (gen:let ([k gen:scalar-type*]
+             [v gen:primitive-type])
+     (match-define (cons k-type k-gen) k)
+     (match-define (cons v-type v-gen) v)
+     (cons (string->symbol (format "map<~a, ~a>" k-type v-type))
+           (gen:map
+            (gen:list
+             #:max-length 3
+             (gen:tuple k-gen v-gen))
+            (lambda (pairs)
+              (define ht
+                (for/hash ([p (in-list pairs)]
+                           #:unless (eq? missing (car p))
+                           #:unless (eq? missing (cadr p)))
+                  (apply values p)))
+              (if (hash-empty? ht) missing ht)))))))
 
 (define gen:name-str
   (let ([gen:name-seq (gen:seq)])
@@ -121,7 +150,7 @@ SRC
             [all-field-nums (gen:const (cons 1 field-nums))]
             [all-field-names (apply gen:tuple (make-list (length all-field-nums) gen:field-name))]
             [all-field-types (apply gen:tuple (make-list (length all-field-nums) (gen:choice
-                                                                                  gen:primitive-type
+                                                                                  gen:primitive-type+map
                                                                                   (gen:one-of all-names))))])
     (define fields
       (for/list ([num (in-list all-field-nums)]
@@ -133,7 +162,11 @@ SRC
        (for/list ([f (in-list fields)])
          (match-define (list num name type) f)
          (define type* (if (symbol? type) type (car type)))
-         (define label (if (eq? version 'proto2) "optional" ""))
+         (define label
+           (cond
+             [(string-prefix? (~a type*) "map<") ""]
+             [(eq? version 'proto2) "optional"]
+             [else ""]))
          (format "  ~a ~a ~a = ~a;~n" label type* name num))))
     (define str
       (format "message ~a { ~a }" name fields-str))
@@ -240,6 +273,11 @@ SRC
            (error 'python error-str))
          (close-input-port python-in)
          (close-input-port python-err)
+         (unless (equal? roundtripped-v v)
+           (println '=====)
+           (println error-str)
+           (println v)
+           (println roundtripped-v))
          (check-equal? roundtripped-v v)))))
 
   (when protoc

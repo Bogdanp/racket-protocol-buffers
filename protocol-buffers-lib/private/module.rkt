@@ -179,7 +179,7 @@
            (define v-writer (get-writer tok env val-type))
            (define reader (make-map-reader k-reader v-reader))
            (define writer (make-map-writer k-writer v-writer))
-           (define f (message-field name number 0 reader writer))
+           (define f (message-field name number map-mask reader writer))
            (values (hash-set fields name f) required)]
           [_
            (log-protobuf-warning "ignoring field node ~e" node)
@@ -211,16 +211,24 @@
              (reader tag in))
            (loop
             (remq name missing)
-            (if (repeated? flags)
-                (hash-update
-                 message name
-                 (lambda (vs)
-                   (cond
-                     [(null? v) vs]
-                     [(pair? v) (append (reverse v) vs)]
-                     [else (cons v vs)]))
-                 null)
-                (hash-set message name v)))])))
+            (cond
+              [(repeated? flags)
+               (hash-update
+                message name
+                (lambda (vs)
+                  (cond
+                    [(null? v) vs]
+                    [(pair? v) (append (reverse v) vs)]
+                    [else (cons v vs)]))
+                null)]
+              [(map? flags)
+               (hash-update
+                message name
+                (lambda (ht)
+                  (hash-set ht (car v) (cdr v)))
+                hash)]
+              [else
+               (hash-set message name v)]))])))
     (begin0 message
       (unless (null? missing)
         (define fields-str (string-join (map symbol->string missing) ", "))
@@ -252,36 +260,33 @@
       [else
        (loop (proc limited-in res))])))
 
-(define (make-map-reader k-reader v-reader)
-  (make-limited-reader
-   'read-map
-   (lambda (in res)
-     (define-values (k-num k-tag)
-       (read-proto-tag in))
-     (unless (eqv? k-num 1)
-       (error 'read-map "malformed map key"))
-     (define k (k-reader k-tag in))
-     (define-values (v-num v-tag)
-       (read-proto-tag in))
-     (unless (eqv? v-num 2)
-       (error 'read-map "malformed map value"))
-     (define v (v-reader v-tag in))
-     (hash-set (or res (hash)) k v))
-   (lambda (res)
-     (or res (hash)))))
+(define ((make-map-reader k-reader v-reader) tag in)
+  (define len (read-proto-len 'read-map tag in))
+  (define limited-in (make-limited-input-port in len #f))
+  (define-values (k-num k-tag)
+    (read-proto-tag limited-in))
+  (unless (eqv? k-num 1)
+    (error 'read-map "malformed map key"))
+  (define k (k-reader k-tag limited-in))
+  (define-values (v-num v-tag)
+    (read-proto-tag limited-in))
+  (unless (eqv? v-num 2)
+    (error 'read-map "malformed map value"))
+  (define v (v-reader v-tag limited-in))
+  (cons k v))
 
 (define ((make-map-writer k-writer v-writer) num name value out)
   (unless (hash? value)
     (error 'write-map "expected a hash~n  got: ~e~n  field: ~a" value name))
-  (define bs
-    (call-with-output-bytes
-     (lambda (bs-out)
-       (define k-field (format "key of ~a" name))
-       (define v-field (format "value of ~a" name))
-       (for ([(k v) (in-hash value)])
+  (define k-field (format "key of ~a" name))
+  (define v-field (format "value of ~a" name))
+  (for ([(k v) (in-hash value)])
+    (define bs
+      (call-with-output-bytes
+       (lambda (bs-out)
          (k-writer 1 k-field k bs-out)
-         (v-writer 2 v-field v bs-out)))))
-  (write-proto-bytes num name bs out))
+         (v-writer 2 v-field v bs-out))))
+    (write-proto-bytes num name bs out)))
 
 (define (get-packed-reader tok e t)
   (define reader
@@ -411,9 +416,13 @@
 (define optional-mask #b00000001)
 (define repeated-mask #b00000010)
 (define packed-mask   #b00000100)
+(define map-mask      #b00001000)
 
 (define (repeated? f)
   (flag-on? f repeated-mask))
+
+(define (map? f)
+  (flag-on? f map-mask))
 
 
 ;; help ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
