@@ -328,8 +328,8 @@
     [(fixed32 fixed64 int32 int64 sfixed32 sfixed64 sint32 sint64 uint32 uint64) 0]
     [else (match (env-ref e t (λ () #f))
             [(? enum? e) (enum-default e)]
-            [(? message?) (hasheq)]
-            [#f (hasheq)])]))
+            [(? message?) #f]
+            [#f #f])]))
 
 (define (get-reader tok e t)
   (case t

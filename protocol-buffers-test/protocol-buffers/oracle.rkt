@@ -206,11 +206,11 @@ message Test {
 }
 MOD
     [(hasheq)
-     (hasheq 'v 0 'next (hasheq))]
+     (hasheq 'v 0 'next #f)]
     [(hasheq 'v 1)
-     (hasheq 'v 1 'next (hasheq))]
+     (hasheq 'v 1 'next #f)]
     [(hasheq 'v 1 'next (hasheq 'v 2))
-     (hasheq 'v 1 'next (hasheq 'v 2 'next (hasheq)))])
+     (hasheq 'v 1 'next (hasheq 'v 2 'next #f))])
 
    (check-roundtrip
     #<<MOD
@@ -281,9 +281,10 @@ message B {
   int32 x = 1;
 }
 MOD
-    [(hasheq 'a (hasheq))]
+    [(hasheq 'a (hasheq))
+     (hasheq 'a (hasheq 'b #f))]
     [(hasheq 'a (hasheq 'b (hasheq)))
-     (hasheq 'a (hasheq 'b (hasheq)))]
+     (hasheq 'a (hasheq 'b (hasheq 'x 0)))]
     [(hasheq 'a (hasheq 'b (hasheq 'x 42)))])
 
    (check-roundtrip
@@ -332,7 +333,11 @@ message Test {
   optional Test t = 1;
 }
 MOD
-    [(hasheq 't (hasheq))])))
+    [(hasheq)
+     (hasheq 't #f)]
+    [(hasheq 't (hasheq))
+     (hasheq 't (hasheq 't #f))]
+    [(hasheq 't (hasheq 't #f))])))
 
 (module+ test
   (require rackunit/text-ui)
