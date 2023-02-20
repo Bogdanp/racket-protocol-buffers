@@ -5,11 +5,11 @@
          racket/port
          racket/string
          "ast.rkt"
-         "common.rkt"
          "lexer.rkt"
          "logger.rkt"
          "parser.rkt"
          "read.rkt"
+         "type.rkt"
          "write.rkt")
 
 (provide
@@ -23,7 +23,7 @@
 
 (define (make-mod tree)
   (define env (make-env))
-  (define-values (version nodes)
+  (define-values (mode nodes)
     (match tree
       [(Proto2 _ children) (values 'proto2 children)]
       [(Proto3 _ children) (values 'proto3 children)]))
@@ -56,15 +56,13 @@
          (values package (hash-set options name value) types)]
         [(Option _ path value)
          (values package (hash-set options path value) types)]
-        [(Enum tok name (list) _options _reserved)
-         (oops tok "enum ~a has no fields" name)]
-        [(Enum _ name fields options reserved)
-         (define e (make-enum name fields options reserved))
-         (env-set! env name e)
+        [(? Enum? node)
+         (define e (make-enum mode node))
+         (env-set! env (Enum-name node) e)
          (values package options (cons e types))]
-        [(Message _ name children fields options reserved extensions)
-         (define m (make-message name children fields options reserved extensions env))
-         (env-set! env name m)
+        [(? Message? node)
+         (define m (make-message mode node env))
+         (env-set! env (Message-name node) m)
          (values package options (cons m types))]
         [(RPC _ name _stream-domain? _domain _stream-range _range? _options)
          (log-protobuf-warning "skipping RPC definition ~a" name)
@@ -87,8 +85,11 @@
 
 (struct enum (name options default reader writer))
 
-(define (make-enum name field-nodes option-nodes reserved)
-  (define reserved? (make-reserved?-proc reserved))
+(define (make-enum mode node)
+  (match-define (Enum tok name field-nodes option-nodes reserved-nodes) node)
+  (when (null? field-nodes)
+    (oops tok "enum ~a has no fields" name))
+  (define reserved? (make-reserved?-proc reserved-nodes))
   (define options (make-options option-nodes))
   (define fields
     (for/hasheq ([node (in-list field-nodes)])
@@ -96,8 +97,13 @@
         [(EnumField tok name value _options)
          (when (reserved? (symbol->string name) value)
            (oops tok "field ~a is reserved" name))
-         (values name value)])))
+         (values name value)]
+        [(Node tok)
+         (oops tok "unexpected node for enum ~a" name)])))
   (define default (EnumField-name (car field-nodes)))
+  (unless (or (proto2? mode)
+              (zero? (EnumField-value (car field-nodes))))
+    (oops tok "the first enum value must be zero in proto3"))
   (define reader (make-enum-reader name fields))
   (define writer (make-enum-writer name fields))
   (enum name options default reader writer))
@@ -106,9 +112,11 @@
   (define values-to-fields
     (for/hasheqv ([(k v) (in-hash fields)])
       (values v k)))
+  (define ((make-fail v))
+    (error 'read-enum "invalid value for enum ~a: ~a" ename v))
   (lambda (tag in)
     (define v (read-proto-int32 tag in))
-    (hash-ref values-to-fields v (λ () (error 'read-enum "invalid value for enum ~a: ~a" ename v)))))
+    (hash-ref values-to-fields v (make-fail v))))
 
 (define ((make-enum-writer ename fields) num name value out)
   (unless (hash-has-key? fields value)
@@ -125,22 +133,19 @@
 (struct message-field (name number flags default reader writer))
 (struct message (name options reader writer))
 
-(define (make-message name children field-nodes option-nodes reserved _extensions parent-env)
-  (define reserved? (make-reserved?-proc reserved))
+(define (make-message mode node parent-env)
+  (match-define (Message _ name children field-nodes option-nodes reserved-nodes _extension-nodes) node)
+  (define reserved? (make-reserved?-proc reserved-nodes))
   (define options (make-options option-nodes))
   (define env (make-env parent-env))
   (for ([node (in-list children)])
     (match node
-      [(Enum tok name (list) _options _reserved)
-       (oops tok "enum ~a has no fields" name)]
-      [(Enum _ name fields options reserved)
-       (define e (make-enum name fields options reserved))
-       (env-set! env name e)]
-      [(Message _ name children fields options reserved extensions)
-       (define m (make-message name children fields options reserved extensions env))
-       (env-set! env name m)]
-      [_
-       (log-protobuf-warning "ignoring node ~e~n  child of: ~a" node name)]))
+      [(? Enum? node)
+       (env-set! env (Enum-name node) (make-enum mode node))]
+      [(? Message? node)
+       (env-set! env (Message-name node) (make-message mode node env))]
+      [(Node tok)
+       (oops tok "unexpected node in message ~a" name)]))
   (define-values (fields required)
     (let loop ([fields (hasheq)]
                [required null]
@@ -155,6 +160,9 @@
            (define repeated? (eq? label 'repeated))
            (define optional? (or (eq? label 'optional) repeated?))
            (define options (make-options option-nodes))
+           (when (and (proto3? mode)
+                      (hash-has-key? options 'default))
+             (oops tok "explicit default values are not allowed in proto3"))
            (define packed?
              (and repeated?
                   (scalar-type? type)
@@ -166,7 +174,25 @@
            (define default
              (cond
                [repeated? null]
-               [else (hash-ref options 'default (λ () (get-default env type)))]))
+               [else
+                (define value
+                  (hash-ref options 'default (make-get-default env type)))
+                (cond
+                  [(primitive-type? type)
+                   (define-values (ok? res)
+                     (case type
+                       [(bool) (values (boolean? value) value)]
+                       [(bytes) (values (string? value) (and (string? value) (string->bytes/utf-8 value)))]
+                       [(string) (values (string? value) value)]
+                       [(double float) (values (real? value) value)]
+                       [else (values (exact-integer? value) value)]))
+                   (begin0 res
+                     (unless ok?
+                       (oops tok "invalid default value for field")))]
+                  [(hash-has-key? options 'default)
+                   (oops tok "message fields can't have default values")]
+                  [else
+                   value])]))
            (define reader
              ((if packed?
                   get-packed-reader
@@ -177,14 +203,17 @@
                 [packed? get-packed-writer]
                 [repeated? get-repeated-writer]
                 [else get-writer]) tok env type))
-           (define f (message-field name number flags default reader writer))
-           (values (hash-set fields name f)
-                   (if optional? required (cons name required)))]
+           (values
+            (hash-set fields name (message-field name number flags default reader writer))
+            (if optional? required (cons name required)))]
           [(MessageGroupField tok _label _name _number _children _fields _options _reserved _extensions)
            (oops tok "group fields are not supported")]
           [(MessageOneOfField _ _ field-nodes)
-           (loop fields field-nodes)]
-          [(MessageMapField tok key-type val-type name number _option-nodes)
+           (loop fields required field-nodes)]
+          [(MessageMapField tok key-type val-type name number option-nodes)
+           (define options (make-options option-nodes))
+           (when (hash-has-key? options 'default)
+             (oops tok "maps can't have default values"))
            (when (reserved? (symbol->string name) number)
              (oops tok "field ~a is reserved" name))
            (define k-reader (get-reader tok env key-type))
@@ -195,9 +224,8 @@
            (define writer (make-map-writer k-writer v-writer))
            (define f (message-field name number map-mask (hash) reader writer))
            (values (hash-set fields name f) required)]
-          [_
-           (log-protobuf-warning "ignoring field node ~e" node)
-           (values fields required)]))))
+          [(Node tok)
+           (oops tok "unexpected node in message ~a" name)]))))
   (define reader (make-message-reader name fields required))
   (define writer (make-message-writer name fields required))
   (message name options reader writer))
@@ -213,7 +241,7 @@
        (if (optional? flags)
            (hash-set defaults name default)
            defaults))))
-  (define (fail num)
+  (define ((make-fail num))
     (error 'read-message "no field with number ~a in message ~a" num mname))
   (lambda (in)
     (define-values (missing message)
@@ -229,7 +257,7 @@
            (define-values (num tag)
              (read-proto-tag in))
            (match-define (message-field name _number flags _default reader _writer)
-             (hash-ref numbers-to-fields num (λ () (fail num))))
+             (hash-ref numbers-to-fields num (make-fail num)))
            (define v
              (reader tag in))
            (loop
@@ -322,6 +350,9 @@
      (cons (reader #f in) (or res null)))
    (lambda (res)
      (reverse (or res null)))))
+
+(define ((make-get-default e t))
+  (get-default e t))
 
 (define (get-default e t)
   (case t
@@ -514,3 +545,9 @@
         (format "~a~n  source: ~a~n  line: ~a~n  column: ~a" err src line col)
         (format "~a~n  source: ~a~n  position: ~a" err src pos)))
   (error 'read-protobuf msg))
+
+(define (proto2? v)
+  (eq? v 'proto2))
+
+(define (proto3? v)
+  (eq? v 'proto3))

@@ -1,8 +1,8 @@
 #lang racket/base
 
 (require "../ast.rkt"
-         "../common.rkt"
          "../lexer.rkt"
+         "../type.rkt"
          "common.rkt")
 
 (provide

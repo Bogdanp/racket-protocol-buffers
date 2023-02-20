@@ -337,7 +337,37 @@ MOD
      (hasheq 't #f)]
     [(hasheq 't (hasheq))
      (hasheq 't (hasheq 't #f))]
-    [(hasheq 't (hasheq 't #f))])))
+    [(hasheq 't (hasheq 't #f))])
+
+   (check-roundtrip
+    #<<MOD
+syntax = 'proto2';
+
+message Test {
+  optional bytes b = 1 [default = 'hello'];
+}
+MOD
+    [(hasheq)
+     (hasheq 'b #"hello")]
+    [(hasheq 'b #"goodbye")])
+
+   (check-roundtrip
+    #<<MOD
+syntax = 'proto2';
+
+message Test {
+  oneof o {
+    string s = 1;
+    int32 i = 2;
+  }
+}
+MOD
+    [(hasheq)
+     (hasheq 's "" 'i 0)]
+    [(hasheq 's "hello")
+     (hasheq 's "hello" 'i 0)]
+    [(hasheq 'i 42)
+     (hasheq 's "" 'i 42)])))
 
 (module+ test
   (require rackunit/text-ui)

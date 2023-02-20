@@ -45,6 +45,43 @@ enum Foo {
   reserved "C", 3, 5 to 10;
 }
 MOD
+                             ))))
+
+     (test-case "field values"
+       (check-exn
+        #rx"expected number but found 'hello'"
+        (λ ()
+          (read-protobuf-str #<<MOD
+syntax = 'proto2';
+
+enum Foo {
+  A = 'hello';
+}
+MOD
+                             )))
+
+       (check-exn
+        #rx"expected an integer"
+        (λ ()
+          (read-protobuf-str #<<MOD
+syntax = 'proto2';
+
+enum Foo {
+  A = 2.5;
+}
+MOD
+                             )))
+
+       (check-exn
+        #rx"the first enum value must be zero in proto3"
+        (λ ()
+          (read-protobuf-str #<<MOD
+syntax = 'proto3';
+
+enum Foo {
+  X = 1;
+}
+MOD
                              )))))
 
     (test-suite
@@ -62,6 +99,56 @@ message Foo {
     required string a = 2;
     required int32 b = 3;
   }
+}
+MOD
+                             ))))
+
+     (test-case "default values"
+       (check-exn
+        #rx"invalid default value for field"
+        (λ ()
+          (read-protobuf-str #<<MOD
+syntax = 'proto2';
+
+message Foo {
+  required int32 x = 1 [default = 'a'];
+}
+MOD
+                             )))
+
+       (check-exn
+        #rx"message fields can't have default values"
+        (λ ()
+          (read-protobuf-str #<<MOD
+syntax = 'proto2';
+
+message Foo {
+  optional Foo f = 1 [default = 42];
+}
+MOD
+                             )))
+
+       (check-exn
+        #rx"maps can't have default values"
+        (λ ()
+          (read-protobuf-str #<<MOD
+syntax = 'proto2';
+
+message Foo {
+  map<int32, int32> m = 1 [default = 42];
+}
+MOD
+                             )))
+
+
+       (check-exn
+        #rx"explicit default values are not allowed in proto3"
+        (λ ()
+          (read-protobuf-str #<<MOD
+syntax = 'proto3';
+
+message Foo {
+  int32 x = 1 [default = 42];
 }
 MOD
                              ))))))
