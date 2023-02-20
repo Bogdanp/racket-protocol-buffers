@@ -9,10 +9,12 @@
  parse-proto3)
 
 (define (parse-proto3 l)
+  (define first-tok
+    (lexer-peek l))
   (let loop ([stmts null])
     (case (token-type (lexer-peek l))
       [(eof)
-       (reverse stmts)]
+       (Proto3 first-tok (reverse stmts))]
       [(semicolon)
        (skip l 'semicolon)
        (loop stmts)]

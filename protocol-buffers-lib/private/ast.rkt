@@ -30,6 +30,8 @@
              [else n])))]))
 
 (define-node-types
+  [Proto2 (children)]
+  [Proto3 (children)]
   [Import (qualifier path)]
   [Package (name)]
   [Option (path value)]

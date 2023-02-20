@@ -21,8 +21,12 @@
 
 (struct mod (package options types))
 
-(define (make-mod nodes)
+(define (make-mod tree)
   (define env (make-env))
+  (define-values (version nodes)
+    (match tree
+      [(Proto2 _ children) (values 'proto2 children)]
+      [(Proto3 _ children) (values 'proto3 children)]))
   (define-values (package options types)
     (for/fold ([package #f]
                [options (hash)]
