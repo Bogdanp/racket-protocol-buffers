@@ -37,7 +37,7 @@
              (for ([e (in-list (mod-types m))])
                (define name
                  (match e
-                   [(enum name _options _reader _writer) name]
+                   [(enum name _options _default _reader _writer) name]
                    [(message name _options _reader _writer) name]))
                (env-set! env name e))
              (if (eq? qualifier 'public)
@@ -52,6 +52,8 @@
          (values package (hash-set options name value) types)]
         [(Option _ path value)
          (values package (hash-set options path value) types)]
+        [(Enum tok name (list) _options _reserved)
+         (oops tok "enum ~a has no fields" name)]
         [(Enum _ name fields options reserved)
          (define e (make-enum name fields options reserved))
          (env-set! env name e)
@@ -79,7 +81,7 @@
 (provide
  (struct-out enum))
 
-(struct enum (name options reader writer))
+(struct enum (name options default reader writer))
 
 (define (make-enum name field-nodes option-nodes reserved)
   (define reserved? (make-reserved?-proc reserved))
@@ -91,9 +93,10 @@
          (when (reserved? (symbol->string name) value)
            (oops tok "field ~a is reserved" name))
          (values name value)])))
+  (define default (EnumField-name (car field-nodes)))
   (define reader (make-enum-reader name fields))
   (define writer (make-enum-writer name fields))
-  (enum name options reader writer))
+  (enum name options default reader writer))
 
 (define (make-enum-reader ename fields)
   (define values-to-fields
@@ -115,7 +118,7 @@
  (struct-out message)
  (struct-out message-field))
 
-(struct message-field (name num flags reader writer))
+(struct message-field (name number flags default reader writer))
 (struct message (name options reader writer))
 
 (define (make-message name children field-nodes option-nodes reserved _extensions parent-env)
@@ -124,6 +127,8 @@
   (define env (make-env parent-env))
   (for ([node (in-list children)])
     (match node
+      [(Enum tok name (list) _options _reserved)
+       (oops tok "enum ~a has no fields" name)]
       [(Enum _ name fields options reserved)
        (define e (make-enum name fields options reserved))
        (env-set! env name e)]
@@ -131,7 +136,7 @@
        (define m (make-message name children fields options reserved extensions env))
        (env-set! env name m)]
       [_
-       (log-protobuf-warning "ignoring node ~e (child of message ~a)" node name)]))
+       (log-protobuf-warning "ignoring node ~e~n  child of: ~a" node name)]))
   (define-values (fields required)
     (let loop ([fields (hasheq)]
                [required null]
@@ -143,16 +148,21 @@
           [(MessageField tok label type name number option-nodes)
            (when (reserved? (symbol->string name) number)
              (oops tok "field ~a is reserved" name))
-           (define optional? (eq? label 'optional))
            (define repeated? (eq? label 'repeated))
+           (define optional? (or (eq? label 'optional) repeated?))
            (define options (make-options option-nodes))
-           (define packed? (and repeated?
-                                (scalar-type? type)
-                                (hash-ref options 'packed #f)))
+           (define packed?
+             (and repeated?
+                  (scalar-type? type)
+                  (hash-ref options 'packed #f)))
            (define flags
              (fxior (if optional? optional-mask 0)
                     (if repeated? repeated-mask 0)
                     (if packed? packed-mask 0)))
+           (define default
+             (cond
+               [repeated? null]
+               [else (hash-ref options 'default (λ () (get-default env type)))]))
            (define reader
              ((if packed?
                   get-packed-reader
@@ -163,7 +173,7 @@
                 [packed? get-packed-writer]
                 [repeated? get-repeated-writer]
                 [else get-writer]) tok env type))
-           (define f (message-field name number flags reader writer))
+           (define f (message-field name number flags default reader writer))
            (values (hash-set fields name f)
                    (if optional? required (cons name required)))]
           [(MessageGroupField tok _label _name _number _children _fields _options _reserved _extensions)
@@ -179,7 +189,7 @@
            (define v-writer (get-writer tok env val-type))
            (define reader (make-map-reader k-reader v-reader))
            (define writer (make-map-writer k-writer v-writer))
-           (define f (message-field name number map-mask reader writer))
+           (define f (message-field name number map-mask (hash) reader writer))
            (values (hash-set fields name f) required)]
           [_
            (log-protobuf-warning "ignoring field node ~e" node)
@@ -189,13 +199,22 @@
   (message name options reader writer))
 
 (define (make-message-reader mname fields required)
-  (define numbers-to-fields
-    (for/hasheqv ([f (in-hash-values fields)])
-      (values (message-field-num f) f)))
+  (define-values (numbers-to-fields defaults)
+    (for/fold ([numbers-to-fields (hasheqv)]
+               [defaults (hasheq)])
+              ([f (in-hash-values fields)])
+      (match-define (message-field name number flags default _reader _writer) f)
+      (values
+       (hash-set numbers-to-fields number f)
+       (if (optional? flags)
+           (hash-set defaults name default)
+           defaults))))
+  (define (fail num)
+    (error 'read-message "no field with number ~a in message ~a" num mname))
   (lambda (in)
     (define-values (missing message)
       (let loop ([missing required]
-                 [message (hasheq)])
+                 [message defaults])
         (cond
           [(eof-object? (peek-byte in))
            (values missing (for/hasheq ([(k v) (in-hash message)])
@@ -205,8 +224,8 @@
           [else
            (define-values (num tag)
              (read-proto-tag in))
-           (match-define (message-field name _number flags reader _writer)
-             (hash-ref numbers-to-fields num (λ () (error 'read-message "no field with number ~a in message ~a" num mname))))
+           (match-define (message-field name _number flags _default reader _writer)
+             (hash-ref numbers-to-fields num (λ () (fail num))))
            (define v
              (reader tag in))
            (loop
@@ -242,9 +261,11 @@
   (define missing
     (for/fold ([missing required])
               ([(k v) (in-hash value)])
-      (match-define (message-field name num _flags _reader writer)
+      (match-define (message-field name num flags default _reader writer)
         (hash-ref fields k (λ () (error 'write-message "unknown field ~a for message ~a" k mname))))
-      (writer num name v out)
+      (unless (and (optional? flags)
+                   (equal? v default))
+        (writer num name v out))
       (remq k missing)))
   (unless (null? missing)
     (define fields-str (string-join (map symbol->string missing) ", "))
@@ -298,6 +319,18 @@
    (lambda (res)
      (reverse (or res null)))))
 
+(define (get-default e t)
+  (case t
+    [(bool) #f]
+    [(bytes) #""]
+    [(string) ""]
+    [(double float) 0.0]
+    [(fixed32 fixed64 int32 int64 sfixed32 sfixed64 sint32 sint64 uint32 uint64) 0]
+    [else (match (env-ref e t (λ () #f))
+            [(? enum? e) (enum-default e)]
+            [(? message?) (hasheq)]
+            [#f (hasheq)])]))
+
 (define (get-reader tok e t)
   (case t
     [(bool) read-proto-bool]
@@ -324,7 +357,7 @@
 (define (->reader t)
   (match t
     [(? procedure?) t]
-    [(enum _name _options reader _writer) reader]
+    [(enum _name _options _default reader _writer) reader]
     [(message _name _options reader _writer)
      (lambda (tag in)
        (define len (read-proto-len 'read-message tag in))
@@ -380,7 +413,7 @@
 (define (->writer t)
   (match t
     [(? procedure?) t]
-    [(enum _name _options _reader writer) writer]
+    [(enum _name _options _default _reader writer) writer]
     [(message _name _options _reader writer)
      (lambda (num name value out)
        (define bs
@@ -418,11 +451,17 @@
 (define packed-mask   #b00000100)
 (define map-mask      #b00001000)
 
+(define (optional? f)
+  (flag-on? f optional-mask))
+
 (define (repeated? f)
   (flag-on? f repeated-mask))
 
 (define (map? f)
   (flag-on? f map-mask))
+
+(define (flag-on? n m)
+  (fx= (fxand n m) m))
 
 
 ;; help ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -471,6 +510,3 @@
         (format "~a~n  source: ~a~n  line: ~a~n  column: ~a" err src line col)
         (format "~a~n  source: ~a~n  position: ~a" err src pos)))
   (error 'read-protobuf msg))
-
-(define (flag-on? n m)
-  (fx= (fxand n m) m))

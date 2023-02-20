@@ -1,298 +1,340 @@
 #lang racket/base
 
-(require protocol-buffers
-         rackcheck
-         rackcheck/shrink-tree
+(require (for-syntax racket/base
+                     syntax/parse)
+         protocol-buffers
          racket/file
-         racket/format
-         racket/list
          racket/match
          racket/port
-         racket/string
+         racket/runtime-path
          racket/system
-         "common.rkt")
+         rackunit
+         (only-in rackunit/private/check-info location-info))
 
-(define missing (gensym 'missing))
+(define protoc (find-executable-path "protoc"))
+(define python (find-executable-path "python"))
 
-(define (gen:seq [seq 0])
-  (make-gen
-   (lambda (_prng _size)
-     (begin0 (make-shrink-tree seq)
-       (set! seq (add1 seq))))))
+(define-runtime-path here ".")
+(define oracle-dir (build-path here "oracle"))
+(define oracle/__init__.py (build-path oracle-dir "__init__.py"))
+(define oracle.py (build-path here "oracle.py"))
 
-(define gen:bool
-  (gen:map
-   gen:boolean
-   (lambda (b)
-     (if b #t missing))))
+(define (compile-proto proto)
+  (define path (make-temporary-file "~a.proto"))
+  (define-values (dir-path name _dir?)
+    (split-path path))
+  (call-with-output-file path
+    #:exists 'replace
+    (lambda (out)
+      (displayln proto out)))
+  (delete-directory/files oracle-dir #:must-exist? #f)
+  (make-directory* oracle-dir)
+  (call-with-output-file oracle/__init__.py void)
+  (unless (zero? (system*/exit-code protoc "-I" dir-path name "--python_out" oracle-dir))
+    (error 'proto-compile "protoc failed~n  proto: ~a" proto))
+  name)
 
-(define gen:int
-  (gen:map
-   (gen:choice
-    (gen:integer-in #x-80000000 #x0)
-    (gen:integer-in #x0 #x7FFFFFFF))
-   (lambda (n)
-     (if (zero? n) missing n))))
+(define (roundtrip-via-oracle msg name v)
+  (match-define (list in out _pid err control)
+    (process* python
+              oracle.py
+              (path->string (path-replace-extension name #""))
+              "Test"))
+  (write-message msg v out)
+  (close-output-port out)
+  (control 'wait)
+  (begin0 (read-message msg in)
+    (let ([error-str (port->string err)])
+      (close-input-port in)
+      (close-input-port err)
+      (unless (zero? (control 'exit-code))
+        (error 'python error-str)))))
 
-(define gen:int64
-  (gen:choice
-   gen:int
-   (gen:map gen:int (λ (x) (if (eq? missing x) missing (* x 2))))))
+(begin-for-syntax
+  (define (syntax->location-stx stx)
+    (datum->syntax
+     stx
+     (list
+      'location-info
+      (list
+       'list
+       (syntax-source stx)
+       (syntax-line stx)
+       (syntax-column stx)
+       (syntax-position stx)
+       (syntax-span stx))))))
 
-(define gen:uint
-  (gen:map
-   (gen:choice
-    (gen:integer-in #x0 #x7FFFFFFF)
-    (gen:integer-in #x80000000 #xFFFFFFFF))
-   (lambda (n)
-     (if (zero? n) missing n))))
+(define-syntax (check-roundtrip stx)
+  (syntax-parse stx
+    [(_ proto-str:string [in {~optional out}] ...+)
+     #:with mod #'mod
+     #:with msg #'msg
+     #:with name #'name
+     #:with (check ...)
+     (for/list ([in-stx (in-list (syntax-e #'(in ...)))]
+                [out-stx (in-list (syntax-e #'({~? out in} ...)))])
+       (with-syntax ([in in-stx]
+                     [out out-stx])
+         #`(let ([res (roundtrip-via-oracle msg name in)]
+                 [exp out])
+             (with-check-info (['location #,(syntax->location-stx out-stx)])
+               (check-equal? res exp)))))
+     #'(let ([proto proto-str])
+         (define mod (read-protobuf (open-input-string proto)))
+         (define msg (mod-ref mod 'Test))
+         (define name (compile-proto proto))
+         check ...)]))
 
-(define gen:uint64
-  (gen:choice
-   gen:uint
-   (gen:map gen:uint (λ (x) (if (eq? missing x) missing (* x 2))))))
+(define oracle-suite
+  (test-suite
+   "oracle"
 
-;; The scalar types that are allowed as map keys.
-(define gen:scalar-type*
-  (gen:choice
-   (gen:const (cons 'bool gen:bool))
-   (gen:const (cons 'int32 gen:int))
-   (gen:const (cons 'int64 gen:int64))
-   (gen:const (cons 'uint32 gen:uint))
-   (gen:const (cons 'uint64 gen:uint64))
-   (gen:const (cons 'sint32 gen:int))
-   (gen:const (cons 'sint64 gen:int64))
-   (gen:const (cons 'fixed32 gen:uint))
-   (gen:const (cons 'fixed64 gen:uint64))
-   (gen:const (cons 'sfixed32 gen:int))
-   (gen:const (cons 'sfixed64 gen:int64))))
+   (check-roundtrip
+    #<<MOD
+syntax = 'proto2';
 
-(define gen:scalar-type
-  (gen:choice
-   gen:scalar-type*
-   (gen:const (cons 'double gen:real))
-   (gen:const (cons 'float (gen:const 3.140000104904175)))))
-
-(define gen:primitive-type
-  (gen:choice
-   gen:scalar-type
-   (gen:const (cons 'bytes (gen:map
-                            (gen:bytes)
-                            (lambda (bs)
-                              (if (bytes=? #"") missing bs)))))
-   (gen:const (cons 'string (gen:map
-                             (gen:string)
-                             (lambda (s)
-                               (if (string=? s "") missing s)))))))
-
-
-(define gen:name-str
-  (let ([gen:name-seq (gen:seq)])
-    (gen:no-shrink
-     (gen:let ([start gen:char-letter]
-               [rest (gen:list gen:char-alphanumeric #:max-length 10)]
-               [seq gen:name-seq])
-       (string-append
-        (apply string start rest)
-        (number->string seq))))))
-
-(define gen:type-name
-  (gen:map gen:name-str (compose1 string->symbol string-titlecase)))
-(define gen:field-name
-  (gen:map gen:name-str (compose1 string->symbol string-downcase)))
-
-(define (gen:custom-type name generators)
-  (gen:frequency
-   `((10 . ,(gen:const missing))
-     (1  . ,(gen:delay (hash-ref generators name))))))
-
-(define (gen:map-type custom-type-names generators)
-  (gen:let ([k gen:scalar-type*]
-            [v (gen:type custom-type-names)])
-    (match-define (cons k-type k-gen) k)
-    (match-define (cons v-type v-gen)
-      (if (symbol? v)
-          (cons v (gen:custom-type v generators))
-          v))
-    (cons (string->symbol (format "map<~a, ~a>" k-type v-type))
-          (gen:map
-           (gen:list
-            #:max-length 3
-            (gen:tuple k-gen v-gen))
-           (lambda (pairs)
-             (define ht
-               (for/hash ([p (in-list pairs)]
-                          #:unless (eq? missing (car p))
-                          #:unless (eq? missing (cadr p)))
-                 (apply values p)))
-             (if (hash-empty? ht) missing ht))))))
-
-(define (gen:type custom-type-names)
-  (gen:choice
-   gen:primitive-type
-   (gen:one-of custom-type-names)))
-
-(define (gen:type+map custom-type-names generators)
-  (gen:choice
-   (gen:type custom-type-names)
-   (gen:map-type custom-type-names generators)))
-
-(define (gen:enum generators)
-  (gen:let ([name gen:type-name]
-            [field-nums (gen:list (gen:seq 1) #:max-length 10)]
-            [all-field-nums (gen:const (cons 0 field-nums))]
-            [all-field-names (apply gen:tuple (make-list (length all-field-nums) gen:field-name))])
-    (define fields-str
-      (string-join
-       (for/list ([num (in-list all-field-nums)]
-                  [name (in-list all-field-names)])
-         (format "  ~a = ~a;" name num))
-       "\n"))
-    (define str
-      (format #<<SRC
-enum ~a {
-~a
+message Test {
 }
-SRC
-              name
-              fields-str))
-    (hash-set! generators name (gen:map
-                                (gen:one-of all-field-names)
-                                (lambda (name)
-                                  (if (eq? name (car all-field-names)) missing name))))
-    (cons name str)))
+MOD
+    [(hasheq)
+     (hasheq)])
 
-(define (gen:message version name all-names generators)
-  (gen:let ([field-nums (gen:list (gen:seq 2) #:max-length 10)]
-            [all-field-nums (gen:const (cons 1 field-nums))]
-            [all-field-names (apply gen:tuple (make-list (length all-field-nums) gen:field-name))]
-            [all-field-types (apply gen:tuple (make-list (length all-field-nums) (gen:type+map all-names generators)))])
-    (define fields
-      (for/list ([num (in-list all-field-nums)]
-                 [name (in-list all-field-names)]
-                 [type (in-list all-field-types)])
-        (list num name type)))
-    (define fields-str
-      (string-join
-       (for/list ([f (in-list fields)])
-         (match-define (list num name type) f)
-         (define type* (if (symbol? type) type (car type)))
-         (define label
-           (cond
-             [(string-prefix? (~a type*) "map<") ""]
-             [(eq? version 'proto2) "optional"]
-             [else ""]))
-         (format "  ~a ~a ~a = ~a;~n" label type* name num))))
-    (define str
-      (format "message ~a { ~a }" name fields-str))
-    (hash-set! generators name (gen:map
-                                (apply
-                                 gen:hasheq
-                                 (flatten
-                                  (for/list ([f (in-list fields)])
-                                    (match-define (list _num name type) f)
-                                    (cond
-                                      [(symbol? type)
-                                       (list name (gen:custom-type type generators))]
-                                      [else
-                                       (list name (cdr type))]))))
-                                (λ (ht)
-                                  (for/hasheq ([(k v) (in-hash ht)] #:unless (eq? v missing))
-                                    (values k v)))))
-    (cons name str)))
+   (let ([ht (λ (k v)
+               (hash-set
+                (hasheq 'i32 0 'i64 0 'u32  0 'u64  0 's32 0   's64 0
+                        'f32 0 'f64 0 'sf32 0 'sf64 0 'd   0.0 'f   0.0
+                        'b #f)
+                k v))])
+     (check-roundtrip
+      #<<MOD
+syntax = 'proto3';
 
-(define gen:module
-  (gen:let ([generators (gen:const (make-hasheq))]
-            [version (gen:one-of '(proto2 proto3))]
-            [enums (gen:list (gen:enum generators) #:max-length 5)]
-            [first-message-name gen:type-name]
-            [message-names (gen:list gen:type-name #:max-length 10)]
-            [all-message-names (gen:const (cons first-message-name message-names))]
-            [messages (apply gen:tuple (for/list ([name (in-list all-message-names)])
-                                         (gen:message version name (append all-message-names (map car enums)) generators)))])
-    (define enums-str
-      (string-join (map cdr enums) "\n"))
-    (define messages-str
-      (string-join (map cdr messages) "\n"))
-    (define str
-      (format "syntax = '~a';~n~a~n~a" version enums-str messages-str))
-    (define msg
-      (car all-message-names))
-    (list str msg (hash-ref generators msg))))
+message Test {
+  int32 i32 = 1;
+  int64 i64 = 2;
+  uint32 u32 = 3;
+  uint64 u64 = 4;
+  sint32 s32 = 5;
+  sint64 s64 = 6;
+  fixed32 f32 = 7;
+  fixed64 f64 = 8;
+  sfixed32 sf32 = 9;
+  sfixed64 sf64 = 10;
+  double d = 11;
+  float f = 12;
+  bool b = 13;
+}
+MOD
+      [(hasheq)
+       (ht 'i32 0)]
+      [(hasheq 'i32 #x-80000000)
+       (ht 'i32 #x-80000000)]
+      [(hasheq 'i32 #x7FFFFFFF)
+       (ht 'i32 #x7FFFFFFF)]
+      [(hasheq 'i64 #x-800000000000000)
+       (ht 'i64 #x-800000000000000)]
+      [(hasheq 'i64 #x7FFFFFFFFFFFFFFF)
+       (ht 'i64 #x7FFFFFFFFFFFFFFF )]
+      [(hasheq 'u32 #xFFFFFFFF)
+       (ht 'u32 #xFFFFFFFF)]
+      [(hasheq 'u64 #xFFFFFFFFFFFFFFFF)
+       (ht 'u64 #xFFFFFFFFFFFFFFFF)]
+      [(hasheq 's32 #x-80000000)
+       (ht 's32 #x-80000000)]
+      [(hasheq 's32 #x7FFFFFFF)
+       (ht 's32 #x7FFFFFFF)]
+      [(hasheq 's64 #x-800000000000000)
+       (ht 's64 #x-800000000000000)]
+      [(hasheq 's64 #x7FFFFFFFFFFFFFFF)
+       (ht 's64 #x7FFFFFFFFFFFFFFF)]
+      [(hasheq 'f32 #xFFFFFFFF)
+       (ht 'f32 #xFFFFFFFF)]
+      [(hasheq 'f64 #xFFFFFFFFFFFFFFFF)
+       (ht 'f64 #xFFFFFFFFFFFFFFFF)]
+      [(hasheq 'sf32 #x7FFFFFFF)
+       (ht 'sf32 #x7FFFFFFF)]
+      [(hasheq 'sf64 #x7FFFFFFFFFFFFFFF)
+       (ht 'sf64 #x7FFFFFFFFFFFFFFF)]
+      [(hasheq 'd 3.14)
+       (ht 'd 3.14)]
+      [(hasheq 'f 3.14)
+       (ht 'f 3.140000104904175)]
+      [(hasheq 'b #t)
+       (ht 'b #t)]))
+
+   (check-roundtrip
+    #<<MOD
+syntax = 'proto2';
+
+enum E {
+  first = 1;
+  second = 2;
+}
+
+message Test {
+  required E e = 1;
+}
+MOD
+    [(hasheq 'e 'first)]
+    [(hasheq 'e 'second)])
+
+   (check-roundtrip
+    #<<MOD
+syntax = 'proto2';
+
+enum E {
+  first = 5;
+  second = 10;
+}
+
+message Test {
+  optional E e = 1;
+}
+MOD
+    [(hasheq)
+     (hasheq 'e 'first)]
+    [(hasheq 'e 'second)
+     (hasheq 'e 'second)])
+
+   (check-roundtrip
+    #<<MOD
+syntax = 'proto3';
+
+message Test {
+  int32 v = 1;
+  Test next = 2;
+}
+MOD
+    [(hasheq)
+     (hasheq 'v 0 'next (hasheq))]
+    [(hasheq 'v 1)
+     (hasheq 'v 1 'next (hasheq))]
+    [(hasheq 'v 1 'next (hasheq 'v 2))
+     (hasheq 'v 1 'next (hasheq 'v 2 'next (hasheq)))])
+
+   (check-roundtrip
+    #<<MOD
+syntax = 'proto2';
+
+message Test {
+  repeated int32 x = 1;
+}
+MOD
+    [(hasheq)
+     (hasheq 'x null)]
+    [(hasheq 'x '(1 2 3))])
+
+   (check-roundtrip
+    #<<MOD
+syntax = 'proto2';
+
+message Test {
+  repeated int32 x = 1 [packed = true];
+}
+MOD
+    [(hasheq)
+     (hasheq 'x null)]
+    [(hasheq 'x '(1 2 3))])
+
+   (check-roundtrip
+    #<<MOD
+syntax = 'proto3';
+
+message Test {
+  repeated int32 x = 1;
+}
+MOD
+    [(hasheq)
+     (hasheq 'x null)]
+    [(hasheq 'x '(1 2 3))])
+
+   (check-roundtrip
+    #<<MOD
+syntax = 'proto3';
+
+message Test {
+  string s = 1;
+  map<int32, Test> m = 2;
+}
+MOD
+    [(hasheq)
+     (hasheq 's "")]
+    [(hasheq 's "hello")
+     (hasheq 's "hello")]
+    [(hasheq 's "hello" 'm (hash 1 (hasheq)))
+     (hasheq 's "hello" 'm (hash 1 (hasheq 's "")))]
+    [(hasheq 's "hello" 'm (hash 1 (hasheq 's "goodbye")))])
+
+   (check-roundtrip
+    #<<MOD
+syntax = 'proto3';
+
+message Test {
+  A a = 1;
+}
+
+message A {
+  B b = 1;
+}
+
+message B {
+  int32 x = 1;
+}
+MOD
+    [(hasheq 'a (hasheq))]
+    [(hasheq 'a (hasheq 'b (hasheq)))
+     (hasheq 'a (hasheq 'b (hasheq)))]
+    [(hasheq 'a (hasheq 'b (hasheq 'x 42)))])
+
+   (check-roundtrip
+    #<<MOD
+syntax = 'proto2';
+
+message Test {
+  message Inner {
+    optional int32 x = 1;
+    optional string s = 5 [default = "default"];
+  }
+
+  repeated Inner i = 1;
+}
+MOD
+    [(hasheq)
+     (hasheq 'i null)]
+    [(hasheq 'i (list (hasheq 'x 1 's "hello")))]
+    [(hasheq 'i (list (hasheq 'x 1)))
+     (hasheq 'i (list (hasheq 'x 1 's "default")))])
+
+   (check-roundtrip
+    #<<MOD
+syntax = 'proto3';
+
+message Test {
+  message Inner {
+    int32 x = 1;
+    string s = 5;
+  }
+
+  repeated Inner i = 1;
+}
+MOD
+    [(hasheq)
+     (hasheq 'i null)]
+    [(hasheq 'i (list (hasheq 'x 1 's "hello")))]
+    [(hasheq 'i (list (hasheq 'x 1)))
+     (hasheq 'i (list (hasheq 'x 1 's "")))])
+
+   (check-roundtrip
+    #<<MOD
+syntax = 'proto2';
+
+message Test {
+  optional Test t = 1;
+}
+MOD
+    [(hasheq 't (hasheq))])))
 
 (module+ test
-  (require racket/runtime-path
-           rackunit)
-
-  (define-property internal-roundtrip
-    ([m gen:module])
-    (match-define (list str msg-id gen:value) m)
-    (define mod (call-with-input-string str read-protobuf))
-    (define msg (mod-ref mod msg-id))
-    (with-handlers ([exn:fail? (λ (e) (error (exn-message e)))])
-      (check-property
-       (property ([v gen:value])
-         (check-equal? (roundtrip msg v) v)))))
-
-  (check-property
-   (make-config #:tests 30)
-   internal-roundtrip)
-
-  (define protoc (find-executable-path "protoc"))
-  (define python (find-executable-path "python"))
-
-  (define-runtime-path here ".")
-  (define oracle-dir (build-path here "oracle"))
-  (define oracle/__init__.py (build-path oracle-dir "__init__.py"))
-  (define oracle.py (build-path here "oracle.py"))
-  (define-property external-roundtrip
-    ([m gen:module])
-    (match-define (list str msg-id gen:value) m)
-    (define mod (call-with-input-string str read-protobuf))
-    (define msg (mod-ref mod msg-id))
-    (define path (make-temporary-file "~a.proto"))
-    (define-values (dir name _is_dir?)
-      (split-path path))
-    (call-with-output-file path
-      #:exists 'replace
-      (lambda (out)
-        (displayln str out)))
-    (delete-directory/files oracle-dir #:must-exist? #f)
-    (make-directory* oracle-dir)
-    (call-with-output-file oracle/__init__.py void)
-    (check-true (zero? (system*/exit-code protoc "-I" dir name "--python_out" oracle-dir)))
-    (with-handlers ([exn:fail? (λ (e) (error (exn-message e)))])
-      (check-property
-       (make-config #:tests 10)
-       (property ([v gen:value])
-         (define v-bs
-           (call-with-output-bytes
-            (lambda (out)
-              (write-message msg v out))))
-         (match-define (list python-in python-out _python-pid python-err control)
-           (process* python
-                     oracle.py
-                     (path->bytes (path-replace-extension name #""))
-                     (symbol->string msg-id)))
-         (write-bytes v-bs python-out)
-         (close-output-port python-out)
-         (control 'wait)
-         (define roundtripped-v
-           (read-message msg python-in))
-         (define error-str
-           (port->string python-err))
-         (unless (zero? (control 'exit-code))
-           (error 'python error-str))
-         (close-input-port python-in)
-         (close-input-port python-err)
-         (unless (equal? roundtripped-v v)
-           (println '=====)
-           (println error-str)
-           (println v)
-           (println roundtripped-v))
-         (check-equal? roundtripped-v v)))))
-
+  (require rackunit/text-ui)
   (when protoc
-    (check-property
-     (make-config #:tests 30)
-     external-roundtrip)))
+    (run-tests oracle-suite)))
