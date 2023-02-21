@@ -367,7 +367,71 @@ MOD
     [(hasheq 's "hello")
      (hasheq 's "hello" 'i 0)]
     [(hasheq 'i 42)
-     (hasheq 's "" 'i 42)])))
+     (hasheq 's "" 'i 42)])
+
+   (check-roundtrip
+    #<<MOD
+syntax = "proto3";
+package schema_reg_protobuf;
+
+option java_package = "io.defn.schema_reg_protobuf";
+option java_outer_classname = "PaymentProtos";
+option java_multiple_files = true;
+
+message Payment {
+  string id = 1;
+  double amount = 2;
+  string region = 3;
+  repeated .schema_reg_protobuf.Payment.MetadataEntry metadata = 4;
+
+  message MetadataEntry {
+    option map_entry = true;
+
+    string key = 1;
+    string value = 2;
+  }
+}
+
+message Test {
+  Payment p = 1;
+}
+MOD
+    [(hasheq)
+     (hasheq 'p #f)]
+    [(hasheq 'p (hasheq 'id "1" 'amount 1024.0 'region "USA" 'metadata (list (hasheq 'key "k" 'value "v"))))])
+
+   (check-roundtrip
+    #<<MOD
+syntax = "proto3";
+package schema_reg_protobuf;
+
+option java_package = "io.defn.schema_reg_protobuf";
+option java_outer_classname = "PaymentProtos";
+option java_multiple_files = true;
+
+message Payment {
+  string id = 1;
+  double amount = 2;
+  string region = 3;
+  repeated Qual.Entry metadata = 4;
+
+  message Qual {
+    message Entry {
+      string key = 1;
+      string value = 2;
+    }
+
+    string ignored = 1;
+  }
+}
+
+message Test {
+  Payment p = 1;
+}
+MOD
+    [(hasheq)
+     (hasheq 'p #f)]
+    [(hasheq 'p (hasheq 'id "1" 'amount 1024.0 'region "USA" 'metadata (list (hasheq 'key "k" 'value "v"))))])))
 
 (module+ test
   (require rackunit/text-ui)

@@ -1,6 +1,7 @@
 #lang racket/base
 
-(require syntax/readerr
+(require racket/format
+         syntax/readerr
          "../ast.rkt"
          "../lexer.rkt")
 
@@ -207,12 +208,18 @@
   (token-val (expect l 'ident)))
 
 (define (parse-ident* l)
-  (define t (lexer-peek l))
-  (case (token-type t)
-    [(ident full-ident)
-     (token-val (lexer-take l))]
-    [else
-     (raise-parse-error t "expected an identifier")]))
+  (let loop ([dot-ok? #t])
+    (define t (lexer-peek l))
+    (case (token-type t)
+      [(dot)
+       (unless dot-ok?
+         (raise-parse-error t "expected an identifier"))
+       (void (lexer-take l))
+       (string->symbol (~a "." (loop #f)))]
+      [(ident full-ident)
+       (token-val (lexer-take l))]
+      [else
+       (raise-parse-error t "expected an identifier")])))
 
 (define (parse-sign l)
   (case (token-type (lexer-peek l))

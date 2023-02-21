@@ -4,6 +4,7 @@
          racket/match
          racket/port
          racket/string
+         racket/symbol
          "ast.rkt"
          "lexer.rkt"
          "logger.rkt"
@@ -22,7 +23,7 @@
 (struct mod (package options types))
 
 (define (make-mod tree)
-  (define env (make-env))
+  (define env (make-env #f))
   (define-values (mode nodes)
     (match tree
       [(Proto2 _ children) (values 'proto2 children)]
@@ -42,7 +43,7 @@
                (define name
                  (match e
                    [(enum name _options _default _reader _writer) name]
-                   [(message name _options _reader _writer) name]))
+                   [(message name _options _children _reader _writer) name]))
                (env-set! env name e))
              (if (eq? qualifier 'public)
                  (values package options (append types (reverse (mod-types m))))
@@ -51,6 +52,7 @@
          #:when package
          (oops tok "package already declared")]
         [(Package _ name)
+         (set-env-name! env name)
          (values name options types)]
         [(Option _ (list name) value)
          (values package (hash-set options name value) types)]
@@ -133,23 +135,28 @@
  (struct-out message-field))
 
 (struct message-field (name number flags default reader writer))
-(struct message (name options reader writer))
+(struct message (name options children reader writer))
 
 (define (make-message mode node parent-env)
-  (match-define (Message _ name children field-nodes option-nodes reserved-nodes _extension-nodes) node)
+  (match-define (Message _ name children-nodes field-nodes option-nodes reserved-nodes _extension-nodes) node)
   (define reserved? (make-reserved?-proc reserved-nodes))
   (define options (make-options option-nodes))
-  (define env (make-env parent-env))
-  (for ([node (in-list children)])
-    (match node
-      [(? Enum? node)
-       (env-set! env (Enum-name node) (make-enum mode node))]
-      [(? Message? node)
-       (env-set! env (Message-name node) (make-message mode node env))]
-      [(Extend tok _name _fields)
-       (oops tok "extensions are not supported")]
-      [(Node tok)
-       (oops tok "unexpected node in message ~a" name)]))
+  (define env (make-env name parent-env))
+  (define children
+    (for/list ([node (in-list children-nodes)])
+      (match node
+        [(? Enum? node)
+         (define e (make-enum mode node))
+         (begin0 e
+           (env-set! env (Enum-name node) e))]
+        [(? Message? node)
+         (define m (make-message mode node env))
+         (begin0 m
+           (env-set! env (Message-name node) m))]
+        [(Extend tok _name _fields)
+         (oops tok "extensions are not supported")]
+        [(Node tok)
+         (oops tok "unexpected node in message ~a" name)])))
   (define-values (fields required)
     (let loop ([fields (hasheq)]
                [required null]
@@ -232,7 +239,7 @@
            (oops tok "unexpected node in message ~a" name)]))))
   (define reader (make-message-reader name fields required))
   (define writer (make-message-writer name fields required))
-  (message name options reader writer))
+  (message name options children reader writer))
 
 (define (make-message-reader mname fields required)
   (define-values (numbers-to-fields defaults)
@@ -365,7 +372,7 @@
     [(string) ""]
     [(double float) 0.0]
     [(fixed32 fixed64 int32 int64 sfixed32 sfixed64 sint32 sint64 uint32 uint64) 0]
-    [else (match (env-ref e t (λ () #f))
+    [else (match (env-ref* e t (λ () #f))
             [(? enum? e) (enum-default e)]
             [(? message?) #f]
             [#f #f])]))
@@ -387,17 +394,17 @@
     [(string) read-proto-string]
     [(uint32) read-proto-uint32]
     [(uint64) read-proto-uint64]
-    [else (->reader (env-ref e t (λ ()
-                                   (lambda (tag in)
-                                     (define (fail)
-                                       (oops tok "undefined type ~a" t))
-                                     ((->reader (env-ref e t fail)) tag in)))))]))
+    [else (->reader (env-ref* e t (λ ()
+                                    (lambda (tag in)
+                                      (define (fail)
+                                        (oops tok "undefined type ~a" t))
+                                      ((->reader (env-ref* e t fail)) tag in)))))]))
 
 (define (->reader t)
   (match t
     [(? procedure?) t]
     [(enum _name _options _default reader _writer) reader]
-    [(message _name _options reader _writer)
+    [(message _name _options _children reader _writer)
      (lambda (tag in)
        (define len (read-proto-len 'read-message tag in))
        (reader (make-limited-input-port in len #f)))]))
@@ -443,17 +450,17 @@
     [(string) write-proto-string]
     [(uint32) write-proto-uint32]
     [(uint64) write-proto-uint64]
-    [else (->writer (env-ref e t (λ ()
-                                   (lambda (num name value out)
-                                     (define (fail)
-                                       (oops tok "undefined type ~a" t))
-                                     ((->writer (env-ref e t fail)) num name value out)))))]))
+    [else (->writer (env-ref* e t (λ ()
+                                    (lambda (num name value out)
+                                      (define (fail)
+                                        (oops tok "undefined type ~a" t))
+                                      ((->writer (env-ref* e t fail)) num name value out)))))]))
 
 (define (->writer t)
   (match t
     [(? procedure?) t]
     [(enum _name _options _default _reader writer) writer]
-    [(message _name _options _reader writer)
+    [(message _name _options _children _reader writer)
      (lambda (num name value out)
        (define bs
          (call-with-output-bytes
@@ -464,13 +471,42 @@
 
 ;; env ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(struct env (parent bindings))
+(struct env ([name #:mutable] parent children bindings))
 
-(define (make-env [parent #f])
-  (env parent (make-hasheq)))
+(define (make-env name [parent #f])
+  (define e
+    (env
+     name parent
+     (make-hasheq) ;; children
+     (make-hasheq) ;; bindings
+     ))
+  (begin0 e
+    (when parent
+      (hash-set! (env-children parent) name e))))
 
-(define (env-ref e id [default-proc (λ () (error 'env-ref "binding not found: ~a" id))])
-  (match-define (env parent bindings) e)
+(define (env-root e)
+  (cond
+    [(env-parent e) => env-root]
+    [else e]))
+
+(define (env-ref* e id [default-proc (λ () (error 'env-ref "binding not found: ~a" id))])
+  (define id-str
+    (symbol->immutable-string id))
+  (cond
+    [(string-prefix? id-str ".")
+     (env-ref-qualified (env-root e) id default-proc)]
+    [(string-contains? id-str ".")
+     (define children (env-children e))
+     (match-define (cons child-id _)
+       (split-id id))
+     (if (hash-has-key? children child-id)
+         (env-ref-qualified (hash-ref children child-id) id default-proc)
+         (default-proc))]
+    [else
+     (env-ref e id default-proc)]))
+
+(define (env-ref e id default-proc)
+  (match-define (env _name parent _children bindings) e)
   (cond
     [(hash-has-key? bindings id)
      (hash-ref bindings id)]
@@ -479,8 +515,25 @@
     [else
      (env-ref parent id default-proc)]))
 
+(define (env-ref-qualified e id default-proc)
+  (let loop ([ids (split-id id)] [e e])
+    (match-define (env name _parent children _bindings) e)
+    (match ids
+      [(list id)
+       (env-ref e id default-proc)]
+      [(list (== name) id)
+       (loop (list id) e)]
+      [(list* (== name) id ids)
+       (if (hash-has-key? children id)
+           (loop ids (hash-ref children id))
+           (default-proc))]
+      [_ (default-proc)])))
+
 (define (env-set! e id v)
   (hash-set! (env-bindings e) id v))
+
+(define (split-id id)
+  (map string->symbol (string-split (symbol->immutable-string id) ".")))
 
 
 ;; flags ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;

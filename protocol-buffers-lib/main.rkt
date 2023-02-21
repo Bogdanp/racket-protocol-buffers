@@ -13,11 +13,13 @@
   [mod? (-> any/c boolean?)]
   [mod-package (-> mod? (or/c #f symbol?))]
   [mod-options (-> mod? hash?)]
+  [mod-messages (-> mod? (listof message?))]
   [mod-ref (->* (mod? symbol?) ((-> any/c)) any/c)]
 
   [message? (-> any/c boolean?)]
   [message-name (-> message? symbol?)]
   [message-options (-> message? hash?)]
+  [message-messages (-> message? (listof message?))]
   [read-message (->* (message?) (input-port?) hash?)]
   [write-message (->* (message? hash?) (output-port?) void?)]))
 
@@ -33,6 +35,12 @@
                #:when (eq? (message-name t) id))
      t)
    (default-proc)))
+
+(define (mod-messages m)
+  (filter message? (mod-types m)))
+
+(define (message-messages m)
+  (filter message? (message-children m)))
 
 (define (read-message m [in (current-input-port)])
   ((message-reader m) in))
