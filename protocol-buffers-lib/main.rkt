@@ -13,7 +13,7 @@
   [mod? (-> any/c boolean?)]
   [mod-package (-> mod? (or/c #f symbol?))]
   [mod-options (-> mod? hash?)]
-  [mod-ref (->* (mod? symbol?) ((-> void?)) message?)]
+  [mod-ref (->* (mod? symbol?) ((-> any)) any)]
 
   [message? (-> any/c boolean?)]
   [message-name (-> message? symbol?)]

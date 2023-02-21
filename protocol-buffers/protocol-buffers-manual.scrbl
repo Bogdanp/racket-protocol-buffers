@@ -48,10 +48,11 @@ any external dependencies.
 
 @section{Limitations}
 
-The parser supports RPC and stream definitions, but @tech{modules} do
-not.  Likewise, @tech{message} group fields are supported in the
-parser, but definitions that use them raise an error when read via
-@racket[read-protobuf].
+The parser supports RPC and stream definitions, but @tech{modules}
+ignore them.  Likewise, @tech{message} group fields are supported in
+the parser, but definitions that use them raise an error when read via
+@racket[read-protobuf].  Message extensions also raise an error when
+read via @racket[read-protobuf].
 
 @section{Reference}
 @defmodule[protocol-buffers]

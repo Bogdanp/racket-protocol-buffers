@@ -64,6 +64,8 @@
          (define m (make-message mode node env))
          (env-set! env (Message-name node) m)
          (values package options (cons m types))]
+        [(Extend tok _name _fields)
+         (oops tok "extensions are not supported")]
         [(RPC _ name _stream-domain? _domain _stream-range _range? _options)
          (log-protobuf-warning "skipping RPC definition ~a" name)
          (values package options types)]
@@ -144,6 +146,8 @@
        (env-set! env (Enum-name node) (make-enum mode node))]
       [(? Message? node)
        (env-set! env (Message-name node) (make-message mode node env))]
+      [(Extend tok _name _fields)
+       (oops tok "extensions are not supported")]
       [(Node tok)
        (oops tok "unexpected node in message ~a" name)]))
   (define-values (fields required)

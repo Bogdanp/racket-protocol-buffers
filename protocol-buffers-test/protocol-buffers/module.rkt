@@ -4,11 +4,14 @@
          (prefix-in private: protocol-buffers/private/module)
          (prefix-in private: protocol-buffers/private/write)
          racket/port
+         racket/runtime-path
          rackunit
          "common.rkt")
 
 (define (read-protobuf-str s)
   (call-with-input-string s read-protobuf))
+
+(define-runtime-path examples "examples")
 
 (define module-suite
   (test-suite
@@ -239,7 +242,95 @@ message B {
 MOD
                                   ))
      (define d (hasheq 'b (hasheq 's "hello")))
-     (check-equal? (roundtrip (mod-ref m 'A) d) d))))
+     (check-equal? (roundtrip (mod-ref m 'A) d) d))
+
+   (test-suite
+    "import"
+
+    (test-case "import proto3 from proto2"
+      (define m
+        (parameterize ([current-directory examples])
+          (read-protobuf-str #<<MOD
+syntax = 'proto2';
+
+import public "person.proto";
+
+message AddressBook {
+  repeated Person people = 1;
+}
+MOD
+                             )))
+      (check-not-false (mod-ref m 'Person))
+
+      (define AddressBook
+        (mod-ref m 'AddressBook))
+      (check-not-false AddressBook)
+
+      (define book
+        (hasheq
+         'people (list
+                  (hasheq 'name "Bogdan"
+                          'id 1
+                          'email "bogdan@defn.io"
+                          'phones (list
+                                   (hasheq 'number "55512341234" 'type 'WORK)
+                                   (hasheq 'number "55512041204" 'type 'HOME))))))
+      (check-equal? (roundtrip AddressBook book) book))
+
+    (test-case "private import"
+      (define m
+        (parameterize ([current-directory examples])
+          (read-protobuf-str #<<MOD
+syntax = 'proto2';
+
+import "person.proto";
+MOD
+                             )))
+      (check-false (mod-ref m 'Person (λ () #f)))))
+
+   (test-suite
+    "unsupported features"
+
+    (test-suite
+     "extensions"
+
+     (test-case "top-level"
+       (check-exn
+        #rx"extensions are not supported"
+        (λ ()
+          (read-protobuf-str #<<MOD
+syntax = 'proto2';
+
+message Foo {
+  extensions 100 to 999;
+}
+
+extend Foo {
+  optional string s = 100;
+}
+MOD
+                             ))))
+
+     (test-case "nested"
+       (check-exn
+        #rx"extensions are not supported"
+        (λ ()
+          (read-protobuf-str #<<MOD
+syntax = 'proto2';
+
+message Foo {
+  extensions 100 to 999;
+}
+
+message Bar {
+  extend Foo {
+    optional string s = 100;
+  }
+
+  optional Foo f = 1;
+}
+MOD
+                             ))))))))
 
 (module+ test
   (require rackunit/text-ui)
