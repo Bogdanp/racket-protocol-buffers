@@ -22,24 +22,24 @@
 
 (struct mod (package options types))
 
-(define (make-mod tree [parent-env #f])
+(define (make-mod tree [parent-ns #f])
   (define-values (mode nodes)
     (match tree
       [(Proto2 _ children) (values 'proto2 children)]
       [(Proto3 _ children) (values 'proto3 children)]))
-  (define-values (package env)
+  (define-values (package ns)
     (for/fold ([package #f]
-               [env parent-env]
-               #:result (values package (or env (make-env #f))))
+               [ns parent-ns]
+               #:result (values package (or ns (make-ns #f))))
               ([node (in-list nodes)])
       (match node
         [(Package tok _)
          #:when package
          (oops tok "package already declared")]
         [(Package _ name)
-         (values name (make-package-env name env))]
+         (values name (make-package-ns name ns))]
         [_
-         (values package env)])))
+         (values package ns)])))
   (define-values (options types)
     (for/fold ([options (hash)]
                [types null])
@@ -50,13 +50,13 @@
            (lambda (in)
              (define l (make-lexer in))
              (define t (parse-proto l))
-             (define m (make-mod t env))
+             (define m (make-mod t ns))
              (for ([e (in-list (mod-types m))])
                (define name
                  (match e
                    [(enum name _options _default _reader _writer) name]
                    [(message name _options _children _reader _writer) name]))
-               (env-set! env name e))
+               (ns-set! ns name e))
              (if (eq? qualifier 'public)
                  (values options (append types (reverse (mod-types m))))
                  (values options types))))]
@@ -68,11 +68,11 @@
          (values (hash-set options path value) types)]
         [(? Enum? node)
          (define e (make-enum mode node))
-         (env-set! env (Enum-name node) e)
+         (ns-set! ns (Enum-name node) e)
          (values options (cons e types))]
         [(? Message? node)
-         (define m (make-message mode node env))
-         (env-set! env (Message-name node) m)
+         (define m (make-message mode node ns))
+         (ns-set! ns (Message-name node) m)
          (values options (cons m types))]
         [(Extend tok _name _fields)
          (oops tok "extensions are not supported")]
@@ -145,22 +145,22 @@
 (struct message-field (name number flags default reader writer))
 (struct message (name options children reader writer))
 
-(define (make-message mode node parent-env)
+(define (make-message mode node parent-ns)
   (match-define (Message _ name children-nodes field-nodes option-nodes reserved-nodes _extension-nodes) node)
   (define reserved? (make-reserved?-proc reserved-nodes))
   (define options (make-options option-nodes))
-  (define env (make-env name parent-env))
+  (define ns (make-ns name parent-ns))
   (define children
     (for/list ([node (in-list children-nodes)])
       (match node
         [(? Enum? node)
          (define e (make-enum mode node))
          (begin0 e
-           (env-set! env (Enum-name node) e))]
+           (ns-set! ns (Enum-name node) e))]
         [(? Message? node)
-         (define m (make-message mode node env))
+         (define m (make-message mode node ns))
          (begin0 m
-           (env-set! env (Message-name node) m))]
+           (ns-set! ns (Message-name node) m))]
         [(Extend tok _name _fields)
          (oops tok "extensions are not supported")]
         [(Node tok)
@@ -195,7 +195,7 @@
                [repeated? null]
                [else
                 (define value
-                  (hash-ref options 'default (make-get-default env type)))
+                  (hash-ref options 'default (make-get-default ns type)))
                 (cond
                   [(primitive-type? type)
                    (define-values (ok? res)
@@ -216,12 +216,12 @@
              ((if packed?
                   get-packed-reader
                   get-reader)
-              tok env type))
+              tok ns type))
            (define writer
              ((cond
                 [packed? get-packed-writer]
                 [repeated? get-repeated-writer]
-                [else get-writer]) tok env type))
+                [else get-writer]) tok ns type))
            (values
             (hash-set fields name (message-field name number flags default reader writer))
             (if optional? required (cons name required)))]
@@ -235,10 +235,10 @@
              (oops tok "maps can't have default values"))
            (when (reserved? (symbol->string name) number)
              (oops tok "field ~a is reserved" name))
-           (define k-reader (get-reader tok env key-type))
-           (define k-writer (get-writer tok env key-type))
-           (define v-reader (get-reader tok env val-type))
-           (define v-writer (get-writer tok env val-type))
+           (define k-reader (get-reader tok ns key-type))
+           (define k-writer (get-writer tok ns key-type))
+           (define v-reader (get-reader tok ns val-type))
+           (define v-writer (get-writer tok ns val-type))
            (define reader (make-map-reader k-reader v-reader))
            (define writer (make-map-writer k-writer v-writer))
            (define f (message-field name number map-mask (hash) reader writer))
@@ -376,11 +376,10 @@
 (define (get-default e t)
   (case t
     [(bool) #f]
-    [(bytes) ""]
-    [(string) ""]
+    [(bytes string) ""]
     [(double float) 0.0]
     [(fixed32 fixed64 int32 int64 sfixed32 sfixed64 sint32 sint64 uint32 uint64) 0]
-    [else (match (env-ref* e t (λ () #f))
+    [else (match (ns-ref* e t (λ () #f))
             [(? enum? e) (enum-default e)]
             [(? message?) #f]
             [#f #f])]))
@@ -402,11 +401,11 @@
     [(string) read-proto-string]
     [(uint32) read-proto-uint32]
     [(uint64) read-proto-uint64]
-    [else (->reader (env-ref* e t (λ ()
-                                    (lambda (tag in)
-                                      (define (fail)
-                                        (oops tok "undefined type ~a" t))
-                                      ((->reader (env-ref* e t fail)) tag in)))))]))
+    [else (->reader (ns-ref* e t (λ ()
+                                   (lambda (tag in)
+                                     (define (fail)
+                                       (oops tok "undefined type ~a" t))
+                                     ((->reader (ns-ref* e t fail)) tag in)))))]))
 
 (define (->reader t)
   (match t
@@ -458,11 +457,11 @@
     [(string) write-proto-string]
     [(uint32) write-proto-uint32]
     [(uint64) write-proto-uint64]
-    [else (->writer (env-ref* e t (λ ()
-                                    (lambda (num name value out)
-                                      (define (fail)
-                                        (oops tok "undefined type ~a" t))
-                                      ((->writer (env-ref* e t fail)) num name value out)))))]))
+    [else (->writer (ns-ref* e t (λ ()
+                                   (lambda (num name value out)
+                                     (define (fail)
+                                       (oops tok "undefined type ~a" t))
+                                     ((->writer (ns-ref* e t fail)) num name value out)))))]))
 
 (define (->writer t)
   (match t
@@ -477,14 +476,13 @@
        (write-proto-bytes num name bs out))]))
 
 
-;; env ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
+;; ns ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(struct env (name parent children bindings)
-  #:transparent)
+(struct ns (name parent children bindings))
 
-(define (make-env name [parent #f])
+(define (make-ns name [parent #f])
   (define e
-    (env
+    (ns
      name
      parent
      (make-hasheq) ;; children
@@ -492,32 +490,39 @@
      ))
   (begin0 e
     (when parent
-      (hash-set! (env-children parent) name e))))
+      (hash-set! (ns-children parent) name e))))
 
-(define (make-env* name [parent #f])
+;; Make a new ns for `name' only if parent doesn't already contain a
+;; namespace with that name.  This ensures that, when importing two
+;; modules with the same namespace, the latter doesn't clobber the
+;; former, and that they are merged instead.
+(define (make-ns* name parent)
   (match parent
-    [#f (make-env name)]
-    [(env _name _parent children _bindings)
+    [#f (make-ns name)]
+    [(ns _name _parent children _bindings)
      (if (hash-has-key? children name)
          (hash-ref children name)
-         (make-env name parent))]))
+         (make-ns name parent))]))
 
-(define (make-package-env name [parent #f])
-  (for/fold ([env parent])
+(define (make-package-ns name parent)
+  (for/fold ([ns parent])
             ([id (in-list (split-id name))])
-    (make-env* id env)))
+    (make-ns* id ns)))
 
-(define (env-root e)
-  (cond
-    [(env-parent e) => env-root]
-    [else e]))
+(define (ns-root e)
+  (if (ns-parent e)
+      (ns-root (ns-parent e))
+      e))
 
-(define (env-ref* e id [default-proc (λ () (error 'env-ref "binding not found: ~a" id))])
+;; .foo.bar.baz -> look up in (ns-root e)
+;;  foo.bar.baz -> look up in e, then (ns-parent e) and so on
+;;          baz -> look up in e
+(define (ns-ref* e id [default-proc (λ () (error 'ns-ref "binding not found: ~a" id))])
   (define id-str
     (symbol->immutable-string id))
   (cond
     [(string-prefix? id-str ".")
-     (env-ref-qualified (env-root e) id default-proc)]
+     (ns-ref-qualified (ns-root e) id default-proc)]
     [(string-contains? id-str ".")
      (match-define (cons child-id _)
        (split-id id))
@@ -526,29 +531,29 @@
          [(not e)
           (default-proc)]
          [else
-          (define children (env-children e))
+          (define children (ns-children e))
           (if (hash-has-key? children child-id)
-              (env-ref-qualified (hash-ref children child-id) id default-proc)
-              (loop (env-parent e)))]))]
+              (ns-ref-qualified (hash-ref children child-id) id default-proc)
+              (loop (ns-parent e)))]))]
     [else
-     (env-ref e id default-proc)]))
+     (ns-ref e id default-proc)]))
 
-(define (env-ref e id default-proc)
-  (match-define (env _name parent _children bindings) e)
+(define (ns-ref e id default-proc)
+  (match-define (ns _name parent _children bindings) e)
   (cond
     [(hash-has-key? bindings id)
      (hash-ref bindings id)]
     [(not parent)
      (default-proc)]
     [else
-     (env-ref parent id default-proc)]))
+     (ns-ref parent id default-proc)]))
 
-(define (env-ref-qualified e id default-proc)
+(define (ns-ref-qualified e id default-proc)
   (let loop ([ids (split-id id)] [e e])
-    (match-define (env name _parent children _bindings) e)
+    (match-define (ns name _parent children _bindings) e)
     (match ids
       [(list id)
-       (env-ref e id default-proc)]
+       (ns-ref e id default-proc)]
       [(list (== name) id)
        (loop (list id) e)]
       [(list* (== name) id ids)
@@ -557,8 +562,8 @@
            (default-proc))]
       [_ (default-proc)])))
 
-(define (env-set! e id v)
-  (hash-set! (env-bindings e) id v))
+(define (ns-set! e id v)
+  (hash-set! (ns-bindings e) id v))
 
 (define (split-id id)
   (map string->symbol (string-split (symbol->immutable-string id) ".")))
