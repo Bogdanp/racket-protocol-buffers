@@ -22,15 +22,26 @@
 
 (struct mod (package options types))
 
-(define (make-mod tree)
-  (define env (make-env #f))
+(define (make-mod tree [parent-env #f])
   (define-values (mode nodes)
     (match tree
       [(Proto2 _ children) (values 'proto2 children)]
       [(Proto3 _ children) (values 'proto3 children)]))
-  (define-values (package options types)
+  (define-values (package env)
     (for/fold ([package #f]
-               [options (hash)]
+               [env parent-env]
+               #:result (values package (or env (make-env #f))))
+              ([node (in-list nodes)])
+      (match node
+        [(Package tok _)
+         #:when package
+         (oops tok "package already declared")]
+        [(Package _ name)
+         (values name (make-package-env name env))]
+        [_
+         (values package env)])))
+  (define-values (options types)
+    (for/fold ([options (hash)]
                [types null])
               ([node (in-list nodes)])
       (match node
@@ -38,7 +49,8 @@
          (call-with-input-file path
            (lambda (in)
              (define l (make-lexer in))
-             (define m (make-mod (parse-proto l)))
+             (define t (parse-proto l))
+             (define m (make-mod t env))
              (for ([e (in-list (mod-types m))])
                (define name
                  (match e
@@ -46,37 +58,33 @@
                    [(message name _options _children _reader _writer) name]))
                (env-set! env name e))
              (if (eq? qualifier 'public)
-                 (values package options (append types (reverse (mod-types m))))
-                 (values package options types))))]
-        [(Package tok _)
-         #:when package
-         (oops tok "package already declared")]
-        [(Package _ name)
-         (set-env-name! env name)
-         (values name options types)]
+                 (values options (append types (reverse (mod-types m))))
+                 (values options types))))]
+        [(Package _ _name)
+         (values options types)]
         [(Option _ (list name) value)
-         (values package (hash-set options name value) types)]
+         (values (hash-set options name value) types)]
         [(Option _ path value)
-         (values package (hash-set options path value) types)]
+         (values (hash-set options path value) types)]
         [(? Enum? node)
          (define e (make-enum mode node))
          (env-set! env (Enum-name node) e)
-         (values package options (cons e types))]
+         (values options (cons e types))]
         [(? Message? node)
          (define m (make-message mode node env))
          (env-set! env (Message-name node) m)
-         (values package options (cons m types))]
+         (values options (cons m types))]
         [(Extend tok _name _fields)
          (oops tok "extensions are not supported")]
         [(RPC _ name _stream-domain? _domain _stream-range _range? _options)
          (log-protobuf-warning "skipping RPC definition ~a" name)
-         (values package options types)]
+         (values options types)]
         [(Stream _ name _domain _range _options)
          (log-protobuf-warning "skipping Stream definition ~a" name)
-         (values package options types)]
+         (values options types)]
         [(Service _ name _rpcs _streams _options)
          (log-protobuf-warning "skipping Service definition ~a" name)
-         (values package options types)]
+         (values options types)]
         [(Node tok)
          (oops tok "unexpected node")])))
   (mod package options types))
@@ -368,7 +376,7 @@
 (define (get-default e t)
   (case t
     [(bool) #f]
-    [(bytes) #""]
+    [(bytes) ""]
     [(string) ""]
     [(double float) 0.0]
     [(fixed32 fixed64 int32 int64 sfixed32 sfixed64 sint32 sint64 uint32 uint64) 0]
@@ -471,18 +479,33 @@
 
 ;; env ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
-(struct env ([name #:mutable] parent children bindings))
+(struct env (name parent children bindings)
+  #:transparent)
 
 (define (make-env name [parent #f])
   (define e
     (env
-     name parent
+     name
+     parent
      (make-hasheq) ;; children
      (make-hasheq) ;; bindings
      ))
   (begin0 e
     (when parent
       (hash-set! (env-children parent) name e))))
+
+(define (make-env* name [parent #f])
+  (match parent
+    [#f (make-env name)]
+    [(env _name _parent children _bindings)
+     (if (hash-has-key? children name)
+         (hash-ref children name)
+         (make-env name parent))]))
+
+(define (make-package-env name [parent #f])
+  (for/fold ([env parent])
+            ([id (in-list (split-id name))])
+    (make-env* id env)))
 
 (define (env-root e)
   (cond
@@ -496,12 +519,17 @@
     [(string-prefix? id-str ".")
      (env-ref-qualified (env-root e) id default-proc)]
     [(string-contains? id-str ".")
-     (define children (env-children e))
      (match-define (cons child-id _)
        (split-id id))
-     (if (hash-has-key? children child-id)
-         (env-ref-qualified (hash-ref children child-id) id default-proc)
-         (default-proc))]
+     (let loop ([e e])
+       (cond
+         [(not e)
+          (default-proc)]
+         [else
+          (define children (env-children e))
+          (if (hash-has-key? children child-id)
+              (env-ref-qualified (hash-ref children child-id) id default-proc)
+              (loop (env-parent e)))]))]
     [else
      (env-ref e id default-proc)]))
 

@@ -431,7 +431,26 @@ message Test {
 MOD
     [(hasheq)
      (hasheq 'p #f)]
-    [(hasheq 'p (hasheq 'id "1" 'amount 1024.0 'region "USA" 'metadata (list (hasheq 'key "k" 'value "v"))))])))
+    [(hasheq 'p (hasheq 'id "1" 'amount 1024.0 'region "USA" 'metadata (list (hasheq 'key "k" 'value "v"))))])
+
+   (parameterize ([current-directory (build-path here "examples" "lib")])
+     (check-roundtrip
+      #<<MOD
+syntax = 'proto3';
+
+import "google/protobuf/any.proto";
+import "google/protobuf/timestamp.proto";
+
+message Test {
+  google.protobuf.Any a = 1;
+  google.protobuf.Timestamp t = 2;
+}
+MOD
+      [(hasheq)
+       (hasheq 'a #f 't #f)]
+      [(hasheq
+        'a (hasheq 'type_url "http://example.com" 'value #"abc")
+        't (hasheq 'seconds 5 'nanos 20))]))))
 
 (module+ test
   (require rackunit/text-ui)
