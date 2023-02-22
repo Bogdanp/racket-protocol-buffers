@@ -17,10 +17,9 @@
  make-mod
  mod?
  mod-package
- mod-options
  mod-types)
 
-(struct mod (package options types))
+(struct mod (package types))
 
 (define (make-mod tree [parent-ns #f])
   (define-values (mode nodes)
@@ -40,7 +39,7 @@
          (values name (make-package-ns name ns))]
         [_
          (values package ns)])))
-  (define-values (options types)
+  (define-values (_options types)
     (for/fold ([options (hash)]
                [types null])
               ([node (in-list nodes)])
@@ -54,8 +53,8 @@
              (for ([e (in-list (mod-types m))])
                (define name
                  (match e
-                   [(enum name _options _default _reader _writer) name]
-                   [(message name _options _children _reader _writer) name]))
+                   [(enum name _default _reader _writer) name]
+                   [(message name _children _reader _writer) name]))
                (ns-set! ns name e))
              (if (eq? qualifier 'public)
                  (values options (append types (reverse (mod-types m))))
@@ -87,7 +86,7 @@
          (values options types)]
         [(Node tok)
          (oops tok "unexpected node")])))
-  (mod package options types))
+  (mod package types))
 
 
 ;; enum ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
@@ -95,14 +94,13 @@
 (provide
  (struct-out enum))
 
-(struct enum (name options default reader writer))
+(struct enum (name default reader writer))
 
 (define (make-enum mode node)
-  (match-define (Enum tok name field-nodes option-nodes reserved-nodes) node)
+  (match-define (Enum tok name field-nodes _option-nodes reserved-nodes) node)
   (when (null? field-nodes)
     (oops tok "enum ~a has no fields" name))
   (define reserved? (make-reserved?-proc reserved-nodes))
-  (define options (make-options option-nodes))
   (define fields
     (for/hasheq ([node (in-list field-nodes)])
       (match node
@@ -118,7 +116,7 @@
     (oops tok "the first enum value must be zero in proto3"))
   (define reader (make-enum-reader name fields))
   (define writer (make-enum-writer name fields))
-  (enum name options default reader writer))
+  (enum name default reader writer))
 
 (define (make-enum-reader ename fields)
   (define values-to-fields
@@ -143,13 +141,12 @@
  (struct-out message-field))
 
 (struct message-field (name number flags default reader writer))
-(struct message (name options children reader writer))
+(struct message (name children reader writer))
 
 (define (make-message mode node parent-ns)
-  (match-define (Message _ name children-nodes field-nodes option-nodes reserved-nodes _extension-nodes) node)
-  (define reserved? (make-reserved?-proc reserved-nodes))
-  (define options (make-options option-nodes))
+  (match-define (Message _ name children-nodes field-nodes _option-nodes reserved-nodes _extension-nodes) node)
   (define ns (make-ns name parent-ns))
+  (define reserved? (make-reserved?-proc reserved-nodes))
   (define children
     (for/list ([node (in-list children-nodes)])
       (match node
@@ -247,7 +244,7 @@
            (oops tok "unexpected node in message ~a" name)]))))
   (define reader (make-message-reader name fields required))
   (define writer (make-message-writer name fields required))
-  (message name options children reader writer))
+  (message name children reader writer))
 
 (define (make-message-reader mname fields required)
   (define-values (numbers-to-fields defaults)
@@ -410,8 +407,8 @@
 (define (->reader t)
   (match t
     [(? procedure?) t]
-    [(enum _name _options _default reader _writer) reader]
-    [(message _name _options _children reader _writer)
+    [(enum _name _default reader _writer) reader]
+    [(message _name _children reader _writer)
      (lambda (tag in)
        (define len (read-proto-len 'read-message tag in))
        (reader (make-limited-input-port in len #f)))]))
@@ -466,8 +463,8 @@
 (define (->writer t)
   (match t
     [(? procedure?) t]
-    [(enum _name _options _default _reader writer) writer]
-    [(message _name _options _children _reader writer)
+    [(enum _name _default _reader writer) writer]
+    [(message _name _children _reader writer)
      (lambda (num name value out)
        (define bs
          (call-with-output-bytes

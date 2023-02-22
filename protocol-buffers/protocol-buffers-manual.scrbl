@@ -77,8 +77,9 @@ definition and any of its dependencies.
   Returns @racket[m]'s package, if any.
 }
 
-@defproc[(mod-options [m mod?]) hash?]{
-  Returns the top-level options defined in @racket[m].
+@defproc[(mod-messages [m mod?]) (listof message?)]{
+  Returns the top-level @tech{messages} in @racket[m], in definition
+  order.
 }
 
 @defproc[(mod-ref [m mod?]
@@ -92,7 +93,7 @@ definition and any of its dependencies.
 
 @subsection{Messages}
 
-@deftech{Message} correspond to @tt{message} definitions within a
+@deftech{Messages} correspond to @tt{message} definitions within a
 Protocol Buffers file.  They contain information about how data should
 be serialized and deserialized.
 
@@ -104,8 +105,8 @@ be serialized and deserialized.
   Returns the name of the message @racket[m].
 }
 
-@defproc[(message-options [m message?]) hash?]{
-  Returns any options defined on the message @racket[m].
+@defproc[(message-messages [m message?]) (listof message?)]{
+  Returns the child messages of @racket[m], in order of definition.
 }
 
 @defproc[(read-message [m message?]

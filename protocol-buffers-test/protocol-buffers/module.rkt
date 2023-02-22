@@ -1,7 +1,6 @@
 #lang racket/base
 
 (require protocol-buffers
-         (prefix-in private: protocol-buffers/private/module)
          (prefix-in private: protocol-buffers/private/write)
          racket/port
          racket/runtime-path
@@ -155,37 +154,6 @@ message Foo {
 }
 MOD
                              ))))))
-
-   (test-suite
-    "options"
-    (test-case "toplevel"
-      (define m (read-protobuf-str #<<MOD
-syntax = 'proto3';
-
-option a = 1;
-option (b).c = 2;
-MOD
-                                   ))
-      (check-equal?
-       (mod-options m)
-       (hash 'a 1
-             '(b c) 2)))
-
-    (test-case "enum"
-      (define  m (read-protobuf-str #<<MOD
-syntax = 'proto3';
-
-enum A {
-  option alias = true;
-  option (java).example = "test";
-  FOO = 0;
-}
-MOD
-                                    ))
-      (check-equal?
-       (private:enum-options (car (private:mod-types m)))
-       (hash 'alias #t
-             '(java example) "test"))))
 
    (test-case "packed option"
      (define m (read-protobuf-str #<<MOD
