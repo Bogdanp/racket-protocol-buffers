@@ -60,6 +60,19 @@
            (MessageField repeated Inner i 3 ()))
           ()
           ()
+          ())))))
+
+   (test-case "parse .proto file with block comments"
+     (check-equal?
+      (parse-example "comments.proto")
+      '(Proto3
+        ((Message
+          Person
+          ()
+          ((MessageField optional string name 1 ())
+           (MessageField optional int32 age 2 ()))
+          ()
+          ()
           ())))))))
 
 (module+ test

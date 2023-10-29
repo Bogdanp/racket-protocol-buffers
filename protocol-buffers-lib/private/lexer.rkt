@@ -82,6 +82,10 @@
 
     [#\/ #:when (equal? (peek-string 2 0 in) "//")
      (make-token 'comment (read-line in))]
+    [#\/ #:when (equal? (peek-string 2 0 in) "/*")
+     (define-values (comment _)
+       (proto:read-block-comment in))
+     (make-token 'comment comment)]
 
     [#\+ (make-token 'plus)]
     [#\- (make-token 'minus)]
@@ -228,12 +232,35 @@
 (define-λcase octal-digit?
   [(#\0 #\1 #\2 #\3 #\4 #\5 #\6 #\7) octal-digit?])
 
+(define-λcase block-comment-start?
+  [(#\/) (λcase [(#\*) block-comment-more?])])
+
+(define-λcase block-comment-more?
+  #:char-id c
+  [(#\*) (λcase
+          #:char-id next-c
+          [(#\/) (λ (_) #f)]
+          [else (block-comment-more?* next-c)])]
+  [(#\/) (λcase
+          #:char-id next-c
+          [(#\*) (error 'block-comment-more? "nested block comments are not allowed")]
+          [else (block-comment-more?* next-c)])]
+  [else (block-comment-more?* c)])
+
+(define (block-comment-more?* c)
+  (if (eof-object? c)
+      (error 'block-comment-more? "unexpected EOF while reading block comment")
+      block-comment-more?))
+
 
 ;; readers ;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;;
 
 (define ((make-reader p f) in [buf (open-output-bytes)])
   (define s (read-string-while in p buf))
   (values s (f s)))
+
+(define proto:read-block-comment
+  (make-reader block-comment-start? values))
 
 (define proto:read-ident
   (make-reader ident-start? string->symbol))
