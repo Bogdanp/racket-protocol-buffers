@@ -64,7 +64,19 @@
        (call-with-input-file (build-path examples "proto2-protoscope-unittest.ast.rktd") read))
      (check-equal?
       (parse-example "proto2-protoscope-unittest.proto")
-      expected))))
+      expected))
+
+   (test-case "proto2 file without syntax declaration"
+     (check-equal?
+      (parse-example "no-syntax.proto")
+      '(Proto2
+        ((Message
+          Person
+          ()
+          ((MessageField required string name 1 ()))
+          ()
+          ()
+          ())))))))
 
 (module+ test
   (require rackunit/text-ui)
