@@ -3,7 +3,7 @@
 @(require scribble/example
           (for-label protocol-buffers
                      racket/base
-                     racket/contract
+                     racket/contract/base
                      racket/port
                      racket/string))
 

@@ -1,6 +1,6 @@
 #lang racket/base
 
-(require racket/contract
+(require racket/contract/base
          racket/port
          "private/lexer.rkt"
          "private/module.rkt"
